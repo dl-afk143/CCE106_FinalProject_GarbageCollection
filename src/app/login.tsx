@@ -1,14 +1,20 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
+
+import {
+  registerForPushNotificationsAsync,
+  sendTestPushNotification,
+} from "../services/notification";
 
 const API_URL = "http://192.168.1.28:3000";
 
@@ -18,6 +24,10 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
+    // ==========================================
+    // CHECK EMPTY FIELDS
+    // ==========================================
+
     if (!email.trim() || !password.trim()) {
       Alert.alert(
         "Missing Information",
@@ -29,6 +39,10 @@ export default function LoginScreen() {
     try {
       setLoading(true);
 
+      // ==========================================
+      // LOGIN REQUEST
+      // ==========================================
+
       const response = await fetch(`${API_URL}/login`, {
         method: "POST",
         headers: {
@@ -36,48 +50,191 @@ export default function LoginScreen() {
         },
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
-          password,
+          password: password,
         }),
       });
+
+      // ==========================================
+      // READ SERVER RESPONSE
+      // ==========================================
 
       const text = await response.text();
 
       console.log("LOGIN SERVER STATUS:", response.status);
       console.log("LOGIN SERVER RESPONSE:", text);
 
-      let data;
+      let data: any;
 
       try {
         data = JSON.parse(text);
       } catch {
         throw new Error(
-          `Server returned invalid response (${response.status}).`,
+          `Server returned an invalid response (${response.status}).`,
         );
       }
 
-      if (!response.ok) {
-        throw new Error(data.message || "Login failed.");
+      // ==========================================
+      // SERVER LOGIN ERROR
+      // ==========================================
+
+      if (!response.ok || !data.success) {
+        throw new Error(data?.message || "Invalid email or password.");
       }
 
-      Alert.alert("Login Successful", "Welcome back!", [
-        {
-          text: "OK",
-          onPress: () => router.replace("/tabs/dashboard"),
-        },
-      ]);
+      // ==========================================
+      // CHECK USER DATA
+      // ==========================================
+
+      if (!data.user || !data.user.id) {
+        throw new Error("Login succeeded, but user information is missing.");
+      }
+
+      const rawRole = String(data.user.role || "")
+        .trim()
+        .toLowerCase();
+
+      let userRole = "Resident";
+
+      if (rawRole === "admin") {
+        userRole = "Admin";
+      } else if (rawRole === "personnel") {
+        userRole = "Personnel";
+      } else if (
+        rawRole === "resident" ||
+        rawRole === "residential" ||
+        rawRole === "user"
+      ) {
+        userRole = "Resident";
+      }
+
+      // ==========================================
+      // CHECK ACCOUNT STATUS
+      // ==========================================
+
+      const userStatus = String(data.user.status || "Active")
+        .trim()
+        .toLowerCase();
+
+      if (userStatus === "disabled") {
+        Alert.alert(
+          "Account Disabled",
+          "Your account has been disabled. Please contact the administrator.",
+        );
+
+        return;
+      }
+
+      // ==========================================
+      // SAVE LOGGED-IN USER
+      // ==========================================
+
+      const loggedInUser = {
+        id: Number(data.user.id),
+        fullName: data.user.fullName || data.user.full_name || "",
+        email: data.user.email || email.trim(),
+        role: userRole,
+        status: data.user.status || "Active",
+      };
+
+      await AsyncStorage.setItem("loggedInUser", JSON.stringify(loggedInUser));
+
+      console.log("====================================");
+      console.log("LOGGED-IN USER:", loggedInUser);
+      console.log("USER ROLE:", loggedInUser.role);
+      console.log("USER STATUS:", loggedInUser.status);
+      console.log("====================================");
+
+      // ==========================================
+      // PUSH NOTIFICATION REGISTRATION
+      // ==========================================
+
+      console.log("REGISTERING FOR PUSH NOTIFICATIONS...");
+
+      try {
+        const pushToken = await registerForPushNotificationsAsync();
+
+        if (pushToken) {
+          console.log("PUSH TOKEN RECEIVED:", pushToken);
+
+          const notificationResult = await sendTestPushNotification(pushToken);
+
+          console.log("TEST PUSH RESULT:", notificationResult);
+        } else {
+          console.log("No push token received. Notification test skipped.");
+        }
+      } catch (notificationError) {
+        // Notification failure should NOT prevent login.
+        console.log("Push notification setup failed:", notificationError);
+      }
+
+      // ==========================================
+      // CLEAR LOGIN FORM
+      // ==========================================
 
       setEmail("");
       setPassword("");
-    } catch (error) {
-      console.error("Login error:", error);
 
-      Alert.alert(
-        "Login Failed",
-        error instanceof Error
-          ? error.message
-          : "Unable to login. Please try again.",
-      );
+      // ==========================================
+      // ROLE-BASED NAVIGATION
+      // ==========================================
+
+      if (loggedInUser.role === "Admin") {
+        // ========================================
+        // ADMIN
+        // ========================================
+
+        Alert.alert(
+          "Admin Login Successful",
+          `Welcome, ${loggedInUser.fullName}!`,
+          [
+            {
+              text: "Continue",
+              onPress: () => {
+                router.replace("/admin");
+              },
+            },
+          ],
+        );
+      } else if (loggedInUser.role === "Personnel") {
+        // ========================================
+        // PERSONNEL
+        // ========================================
+
+        Alert.alert(
+          "Personnel Login Successful",
+          `Welcome, ${loggedInUser.fullName}!`,
+          [
+            {
+              text: "Continue",
+              onPress: () => {
+                router.replace("/personnel-management");
+              },
+            },
+          ],
+        );
+      } else {
+        // ========================================
+        // RESIDENT
+        // ========================================
+
+        Alert.alert(
+          "Login Successful",
+          `Welcome back, ${loggedInUser.fullName}!`,
+          [
+            {
+              text: "Continue",
+              onPress: () => {
+                router.replace("/dashboard");
+              },
+            },
+          ],
+        );
+      }
     } finally {
+      // ==========================================
+      // STOP LOADING
+      // ==========================================
+
       setLoading(false);
     }
   };
@@ -85,11 +242,19 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
+        {/* ==========================================
+            TITLE
+        ========================================== */}
+
         <Text style={styles.title}>Welcome Back</Text>
 
         <Text style={styles.subtitle}>
           Sign in to your Garbage Collection account
         </Text>
+
+        {/* ==========================================
+            EMAIL
+        ========================================== */}
 
         <Text style={styles.label}>Email</Text>
 
@@ -99,9 +264,15 @@ export default function LoginScreen() {
           placeholderTextColor="#94A3B8"
           keyboardType="email-address"
           autoCapitalize="none"
+          autoCorrect={false}
           value={email}
           onChangeText={setEmail}
+          editable={!loading}
         />
+
+        {/* ==========================================
+            PASSWORD
+        ========================================== */}
 
         <Text style={styles.label}>Password</Text>
 
@@ -110,14 +281,23 @@ export default function LoginScreen() {
           placeholder="Enter your password"
           placeholderTextColor="#94A3B8"
           secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
           value={password}
           onChangeText={setPassword}
+          editable={!loading}
+          onSubmitEditing={handleLogin}
         />
+
+        {/* ==========================================
+            LOGIN BUTTON
+        ========================================== */}
 
         <TouchableOpacity
           style={[styles.loginButton, loading && styles.disabledButton]}
           onPress={handleLogin}
           disabled={loading}
+          activeOpacity={0.8}
         >
           {loading ? (
             <ActivityIndicator color="#FFFFFF" />
@@ -126,9 +306,14 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
+        {/* ==========================================
+            REGISTER
+        ========================================== */}
+
         <TouchableOpacity
           onPress={() => router.replace("/register")}
           disabled={loading}
+          activeOpacity={0.7}
         >
           <Text style={styles.registerText}>
             Don't have an account? Register
@@ -138,6 +323,10 @@ export default function LoginScreen() {
     </View>
   );
 }
+
+// ==================================================
+// STYLES
+// ==================================================
 
 const styles = StyleSheet.create({
   container: {

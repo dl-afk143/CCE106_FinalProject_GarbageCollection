@@ -1,7 +1,11 @@
+import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Picker } from "@react-native-picker/picker";
 import * as ImagePicker from "expo-image-picker";
-import { useEffect, useState } from "react";
+import { router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
+
 import {
   ActivityIndicator,
   Alert,
@@ -13,83 +17,383 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import MapView, { MapPressEvent, Marker } from "react-native-maps";
-import { SafeAreaView as SafeAreaContextView } from "react-native-safe-area-context";
-import { submitReport, testBackend } from "../../services/api";
+
+import MapView, { Marker, PROVIDER_GOOGLE, Region } from "react-native-maps";
+
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import {
+  getPlaceDetails,
+  searchPlaces,
+  submitReport,
+  testBackend,
+} from "../../services/api";
+
+/* =========================================================
+   COLORS
+========================================================= */
+
+const GREEN = "#087F5B";
+const GREEN_DARK = "#056B4C";
+const GREEN_LIGHT = "#E8F7F1";
+
+const BLUE = "#2563EB";
+
+const RED = "#DC2626";
+const RED_LIGHT = "#FEF2F2";
+
+const BACKGROUND = "#F5F7FA";
+const TEXT = "#17202A";
+const MUTED = "#6B7280";
+const BORDER = "#E5E7EB";
+const WHITE = "#FFFFFF";
+
+/* =========================================================
+   DEFAULT MAP LOCATION
+========================================================= */
+
+const DEFAULT_LOCATION = {
+  latitude: 12.8797,
+  longitude: 121.774,
+};
+
+/* =========================================================
+   COLLECTION ISSUES
+========================================================= */
+
+const issues = [
+  {
+    label: "Missed Collection",
+    description: "The garbage truck did not collect the waste.",
+    icon: "alert-circle-outline",
+  },
+  {
+    label: "Delayed Collection",
+    description: "Collection arrived later than the scheduled time.",
+    icon: "time-outline",
+  },
+  {
+    label: "Collection Not Completed",
+    description: "Only some of the waste was collected.",
+    icon: "close-circle-outline",
+  },
+  {
+    label: "Schedule Change",
+    description: "The collection schedule has changed.",
+    icon: "calendar-outline",
+  },
+];
+
+/* =========================================================
+   GOOGLE PLACES TYPES
+========================================================= */
+
+type PlaceSuggestion = {
+  placePrediction?: {
+    placeId?: string;
+
+    text?: {
+      text?: string;
+    };
+
+    structuredFormat?: {
+      mainText?: {
+        text?: string;
+      };
+
+      secondaryText?: {
+        text?: string;
+      };
+    };
+  };
+};
+
+type SelectedPlace = {
+  placeId: string;
+  name: string;
+  address: string;
+};
+
+/* =========================================================
+   SCREEN
+========================================================= */
 
 export default function ReportScreen() {
-  useEffect(() => {
-    testBackend()
-      .then((data) => {
-        console.log("BACKEND RESPONSE:", data);
-
-        if (data.success) {
-          Alert.alert(
-            "Connected!",
-            "React Native → Node.js → MySQL is working!",
-          );
-        }
-      })
-      .catch((error) => {
-        console.error("BACKEND ERROR:", error);
-
-        Alert.alert("Connection Failed", "Could not connect to the backend.");
-      });
-  }, []);
+  /* =======================================================
+     BASIC REPORT INFORMATION
+  ======================================================= */
 
   const [selectedIssue, setSelectedIssue] = useState("");
+
   const [description, setDescription] = useState("");
+
   const [photo, setPhoto] = useState<string | null>(null);
+
+  /* =======================================================
+     AREA
+  ======================================================= */
+
   const [selectedArea, setSelectedArea] = useState("Zone 1");
+
+  /* =======================================================
+     DATE
+  ======================================================= */
+
   const [selectedDate, setSelectedDate] = useState(new Date(2026, 8, 30));
+
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  /* =======================================================
+     WASTE TYPE
+  ======================================================= */
+
   const [selectedWasteType, setSelectedWasteType] = useState("General Waste");
 
-  // ==========================================
-  // DEFAULT MAP LOCATION
-  // ==========================================
+  /* =======================================================
+     LOCATION
+  ======================================================= */
 
-  const [location, setLocation] = useState({
-    latitude: 12.8797,
-    longitude: 121.774,
-  });
+  const [location, setLocation] = useState(DEFAULT_LOCATION);
+
+  const [selectedPlace, setSelectedPlace] = useState<SelectedPlace | null>(
+    null,
+  );
+
+  /* =======================================================
+     GOOGLE PLACES SEARCH
+  ======================================================= */
+
+  const [placeQuery, setPlaceQuery] = useState("");
+
+  const [placeSuggestions, setPlaceSuggestions] = useState<PlaceSuggestion[]>(
+    [],
+  );
+
+  const [searchingPlaces, setSearchingPlaces] = useState(false);
+
+  const [selectingPlace, setSelectingPlace] = useState(false);
+
+  /* =======================================================
+     MAP
+  ======================================================= */
+
+  const mapRef = useRef<MapView | null>(null);
+
+  /* =======================================================
+     SUBMIT
+  ======================================================= */
 
   const [submitting, setSubmitting] = useState(false);
 
-  const issues = [
-    "Missed Collection",
-    "Delayed Collection",
-    "Collection Not Completed",
-    "Schedule Change",
-  ];
+  /* =======================================================
+     GOOGLE PLACES SESSION
+  ======================================================= */
 
-  // ==========================================
-  // SELECT LOCATION FROM MAP
-  // ==========================================
+  const placesSessionToken = useRef(
+    `gc-${Date.now()}-${Math.random().toString(36).substring(2)}`,
+  );
 
-  const handleMapPress = (event: MapPressEvent) => {
-    const { latitude, longitude } = event.nativeEvent.coordinate;
+  /* =========================================================
+     CHECK BACKEND
+  ========================================================= */
 
-    setLocation({
-      latitude,
-      longitude,
-    });
+  useEffect(() => {
+    async function checkBackend() {
+      try {
+        await testBackend();
+
+        console.log("BACKEND CONNECTED");
+      } catch (error) {
+        console.log("BACKEND CONNECTION FAILED:", error);
+      }
+    }
+
+    checkBackend();
+  }, []);
+
+  /* =========================================================
+     GOOGLE PLACES AUTOCOMPLETE
+
+     IMPORTANT:
+     This does NOT call Google directly.
+
+     React Native
+          ↓
+     Node.js
+          ↓
+     Google Places API
+  ========================================================= */
+
+  useEffect(() => {
+    const query = placeQuery.trim();
+
+    if (query.length < 2) {
+      setPlaceSuggestions([]);
+      setSearchingPlaces(false);
+
+      return;
+    }
+
+    let cancelled = false;
+
+    const timer = setTimeout(async () => {
+      try {
+        setSearchingPlaces(true);
+
+        const suggestions = await searchPlaces(query);
+
+        if (!cancelled) {
+          setPlaceSuggestions(suggestions);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setPlaceSuggestions([]);
+
+          console.log("GOOGLE PLACES SEARCH ERROR:", error);
+        }
+      } finally {
+        if (!cancelled) {
+          setSearchingPlaces(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+
+      clearTimeout(timer);
+    };
+  }, [placeQuery]);
+
+  /* =========================================================
+     SELECT GOOGLE PLACE
+  ========================================================= */
+
+  const handleSelectPlace = async (suggestion: PlaceSuggestion) => {
+    const prediction = suggestion.placePrediction;
+
+    const placeId = prediction?.placeId;
+
+    if (!placeId) {
+      Alert.alert("Place Error", "The selected place could not be identified.");
+
+      return;
+    }
+
+    try {
+      setSelectingPlace(true);
+
+      setPlaceSuggestions([]);
+
+      /*
+       * Get Google Place Details
+       * through our Node.js backend.
+       */
+
+      const place = await getPlaceDetails(placeId);
+
+      if (
+        !place?.location ||
+        typeof place.location.latitude !== "number" ||
+        typeof place.location.longitude !== "number"
+      ) {
+        throw new Error("Google did not return coordinates for this place.");
+      }
+
+      const latitude = place.location.latitude;
+
+      const longitude = place.location.longitude;
+
+      const placeName =
+        place?.displayName?.text ||
+        prediction?.structuredFormat?.mainText?.text ||
+        prediction?.text?.text ||
+        "Selected Place";
+
+      const placeAddress =
+        place?.formattedAddress ||
+        prediction?.structuredFormat?.secondaryText?.text ||
+        "Address unavailable";
+
+      /* Save selected place */
+
+      setSelectedPlace({
+        placeId,
+        name: placeName,
+        address: placeAddress,
+      });
+
+      /* Save coordinates */
+
+      setLocation({
+        latitude,
+        longitude,
+      });
+
+      /* Put selected name in search box */
+
+      setPlaceQuery(placeName);
+
+      /* Move map */
+
+      const newRegion: Region = {
+        latitude,
+        longitude,
+        latitudeDelta: 0.008,
+        longitudeDelta: 0.008,
+      };
+
+      setTimeout(() => {
+        mapRef.current?.animateToRegion(newRegion, 700);
+      }, 100);
+
+      /* Start a new Places session */
+
+      placesSessionToken.current = `gc-${Date.now()}-${Math.random()
+        .toString(36)
+        .substring(2)}`;
+    } catch (error) {
+      Alert.alert(
+        "Place Selection Failed",
+        error instanceof Error ? error.message : "Unable to select this place.",
+      );
+    } finally {
+      setSelectingPlace(false);
+    }
   };
 
-  // ==========================================
-  // TAKE PHOTO
-  // ==========================================
+  /* =========================================================
+     CLEAR PLACE
+  ========================================================= */
 
-  const handleTakePhoto = async () => {
+  const clearSelectedPlace = () => {
+    setPlaceQuery("");
+
+    setPlaceSuggestions([]);
+
+    setSelectedPlace(null);
+
+    setLocation(DEFAULT_LOCATION);
+
+    placesSessionToken.current = `gc-${Date.now()}-${Math.random()
+      .toString(36)
+      .substring(2)}`;
+  };
+
+  /* =========================================================
+     CAMERA
+  ========================================================= */
+
+  const openCamera = async () => {
     try {
-      const permissionResult =
-        await ImagePicker.requestCameraPermissionsAsync();
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
 
-      if (!permissionResult.granted) {
+      if (!permission.granted) {
         Alert.alert(
           "Camera Permission",
-          "Camera permission is required to take a photo.",
+          "Please allow camera access to take a photo.",
         );
+
         return;
       }
 
@@ -103,82 +407,159 @@ export default function ReportScreen() {
       if (!result.canceled && result.assets.length > 0) {
         setPhoto(result.assets[0].uri);
       }
-    } catch (error) {
-      console.log("Camera error:", error);
-
-      Alert.alert(
-        "Camera Error",
-        "Unable to open the camera. Please try again.",
-      );
+    } catch {
+      Alert.alert("Camera Error", "Unable to open the camera.");
     }
   };
 
-  // ==========================================
-  // DATE
-  // ==========================================
+  /* =========================================================
+     FORMAT DATE
+  ========================================================= */
 
-  const handleDateChange = (event: any, date?: Date) => {
-    setShowDatePicker(false);
-
-    if (date) {
-      setSelectedDate(date);
-    }
+  const formatDate = (date: Date) => {
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   };
 
-  const formattedDate = selectedDate.toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
-
-  // ==========================================
-  // SUBMIT REPORT
-  // ==========================================
+  /* =========================================================
+     SUBMIT REPORT
+  ========================================================= */
 
   const handleSubmit = async () => {
-    // VALIDATE ISSUE
+    /* -------------------------------------------------------
+       CHECK ISSUE
+    ------------------------------------------------------- */
+
     if (!selectedIssue) {
       Alert.alert("Missing Information", "Please select a collection issue.");
+
       return;
     }
 
-    // VALIDATE DESCRIPTION
+    /* -------------------------------------------------------
+       CHECK DESCRIPTION
+    ------------------------------------------------------- */
+
     if (!description.trim()) {
       Alert.alert(
         "Missing Information",
         "Please describe the collection issue.",
       );
+
+      return;
+    }
+
+    /* -------------------------------------------------------
+       CHECK PLACE
+    ------------------------------------------------------- */
+
+    if (!selectedPlace) {
+      Alert.alert(
+        "Location Required",
+        "Please search for and select the actual collection location from Google Maps.",
+      );
+
       return;
     }
 
     try {
       setSubmitting(true);
 
-      // ==========================================
-      // CREATE REPORT DATA
-      // ==========================================
+      /* -----------------------------------------------------
+         GET LOGGED-IN USER
+      ----------------------------------------------------- */
+
+      const storedUser = await AsyncStorage.getItem("loggedInUser");
+
+      if (!storedUser) {
+        Alert.alert(
+          "Login Required",
+          "Please log in before submitting a report.",
+          [
+            {
+              text: "Login",
+              onPress: () => router.replace("/login"),
+            },
+          ],
+        );
+
+        return;
+      }
+
+      /* -----------------------------------------------------
+         PARSE USER
+      ----------------------------------------------------- */
+
+      let user;
+
+      try {
+        user = JSON.parse(storedUser);
+      } catch {
+        await AsyncStorage.removeItem("loggedInUser");
+
+        Alert.alert(
+          "Session Error",
+          "Your login session is invalid. Please log in again.",
+          [
+            {
+              text: "Login",
+              onPress: () => router.replace("/login"),
+            },
+          ],
+        );
+
+        return;
+      }
+
+      /* -----------------------------------------------------
+         CHECK USER ID
+      ----------------------------------------------------- */
+
+      if (!user?.id) {
+        Alert.alert(
+          "Login Required",
+          "Your account information could not be found. Please log in again.",
+          [
+            {
+              text: "Login",
+              onPress: () => router.replace("/login"),
+            },
+          ],
+        );
+
+        return;
+      }
+
+      /* -----------------------------------------------------
+         CREATE REPORT OBJECT
+      ----------------------------------------------------- */
 
       const collectionUpdate = {
+        userId: Number(user.id),
+
         issue: selectedIssue,
+
         description: description.trim(),
 
-        // Save the local photo URI for now.
-        // Actual image upload can be added later.
-        photo: photo,
+        photo,
 
         latitude: location.latitude,
+
         longitude: location.longitude,
 
-        // Use selected area
+        placeName: selectedPlace.name,
+
+        placeAddress: selectedPlace.address,
+
         area: selectedArea,
 
-        // Use selected date
-        collectionDate: formattedDate,
+        collectionDate: formatDate(selectedDate),
 
-        // Current scheduled collection time
         collectionTime: "7:00 AM - 10:00 AM",
 
-        // Use selected waste type
         wasteType: selectedWasteType,
 
         status: "Reported",
@@ -186,127 +567,236 @@ export default function ReportScreen() {
 
       console.log("SUBMITTING REPORT:", collectionUpdate);
 
-      // ==========================================
-      // SEND TO NODE.JS + MYSQL
-      // ==========================================
+      /* -----------------------------------------------------
+         SEND TO NODE.JS
+      ----------------------------------------------------- */
 
       const result = await submitReport(collectionUpdate);
 
-      console.log("REPORT RESPONSE:", result);
-
-      // ==========================================
-      // SUCCESS
-      // ==========================================
-
-      if (result.success) {
-        Alert.alert(
-          "Report Submitted",
-          "Your collection issue has been successfully submitted.",
-        );
-
-        // Clear form
-        setSelectedIssue("");
-        setDescription("");
-        setPhoto(null);
+      if (!result?.success) {
+        throw new Error(result?.message || "Unable to submit your report.");
       }
-    } catch (error) {
-      console.error("Report submission error:", error);
+
+      /* -----------------------------------------------------
+         SUCCESS
+      ----------------------------------------------------- */
 
       Alert.alert(
+        "Report Submitted",
+        "Your collection issue has been submitted successfully.",
+        [
+          {
+            text: "View Reports",
+
+            onPress: () => router.push("/my-reports"),
+          },
+
+          {
+            text: "Done",
+
+            onPress: () => {
+              /* Reset form */
+
+              setSelectedIssue("");
+
+              setDescription("");
+
+              setPhoto(null);
+
+              setSelectedArea("Zone 1");
+
+              setSelectedWasteType("General Waste");
+
+              setSelectedDate(new Date(2026, 8, 30));
+
+              setPlaceQuery("");
+
+              setPlaceSuggestions([]);
+
+              setSelectedPlace(null);
+
+              setLocation(DEFAULT_LOCATION);
+
+              router.replace("/dashboard");
+            },
+          },
+        ],
+      );
+    } catch (error) {
+      Alert.alert(
         "Submission Failed",
-        "Unable to save your collection issue. Please try again.",
+
+        error instanceof Error
+          ? error.message
+          : "Unable to submit your report. Please try again.",
       );
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ==========================================
-  // UI
-  // ==========================================
+  /* =========================================================
+     UI
+  ========================================================= */
 
   return (
-    <SafeAreaContextView style={styles.container}>
+    <SafeAreaView style={styles.safeArea}>
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.container}
       >
-        {/* HEADER */}
+        {/* ===================================================
+            HEADER
+        =================================================== */}
 
         <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.backButton}
+            activeOpacity={0.7}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="arrow-back" size={22} color={TEXT} />
+          </TouchableOpacity>
+
           <View style={styles.headerTextContainer}>
-            <Text style={styles.headerTitle}>Collection Update</Text>
+            <Text style={styles.headerTitle}>Report an Issue</Text>
 
             <Text style={styles.headerSubtitle}>
-              Report an issue with your scheduled collection
+              Submit a garbage collection concern
             </Text>
-          </View>
-
-          <View style={styles.headerIcon}>
-            <Text style={styles.headerIconText}>!</Text>
           </View>
         </View>
 
-        {/* INFORMATION CARD */}
+        {/* ===================================================
+            INFO CARD
+        =================================================== */}
 
         <View style={styles.infoCard}>
           <View style={styles.infoIcon}>
-            <Text style={styles.infoIconText}>i</Text>
+            <Ionicons name="megaphone-outline" size={24} color={GREEN} />
           </View>
 
           <View style={styles.infoContent}>
-            <Text style={styles.infoTitle}>Having a collection issue?</Text>
+            <Text style={styles.infoTitle}>Collection Update</Text>
 
             <Text style={styles.infoText}>
-              Let us know if your scheduled garbage collection was missed,
-              delayed, or changed.
+              Tell us about a missed, delayed, or incomplete garbage collection.
             </Text>
           </View>
         </View>
 
-        {/* CURRENT COLLECTION */}
+        {/* ===================================================
+            CURRENT COLLECTION
+        =================================================== */}
 
         <Text style={styles.sectionTitle}>Current Collection</Text>
 
-        {/* AREA */}
+        <View style={styles.collectionCard}>
+          <View style={styles.collectionTop}>
+            <View style={styles.collectionIcon}>
+              <Ionicons name="trash-outline" size={24} color={GREEN} />
+            </View>
 
-        <Text style={styles.label}>Collection Area & Date/Time</Text>
+            <View style={styles.collectionInfo}>
+              <Text style={styles.collectionLabel}>Garbage Collection</Text>
 
-        <View style={styles.inputBox}>
-          <Text style={styles.inputIcon}>📍</Text>
+              <Text style={styles.collectionType}>{selectedWasteType}</Text>
+            </View>
 
-          <View style={styles.areaPickerContainer}>
+            <View style={styles.activeBadge}>
+              <Text style={styles.activeBadgeText}>ACTIVE</Text>
+            </View>
+          </View>
+
+          <View style={styles.divider} />
+
+          <View style={styles.collectionDetails}>
+            <View style={styles.detailItem}>
+              <Ionicons name="location-outline" size={18} color={GREEN} />
+
+              <View>
+                <Text style={styles.detailLabel}>Area</Text>
+
+                <Text style={styles.detailValue}>{selectedArea}</Text>
+              </View>
+            </View>
+
+            <View style={styles.detailItem}>
+              <Ionicons name="time-outline" size={18} color={GREEN} />
+
+              <View>
+                <Text style={styles.detailLabel}>Collection Time</Text>
+
+                <Text style={styles.detailValue}>7:00 AM - 10:00 AM</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* ===================================================
+            COLLECTION AREA
+        =================================================== */}
+
+        <Text style={styles.sectionTitle}>Collection Area</Text>
+
+        <View style={styles.inputCard}>
+          <View style={styles.inputHeader}>
+            <View style={styles.smallIconBox}>
+              <Ionicons name="location-outline" size={20} color={GREEN} />
+            </View>
+
+            <View>
+              <Text style={styles.inputTitle}>Select your zone</Text>
+
+              <Text style={styles.inputSubtitle}>
+                Choose the area where the issue occurred
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.pickerWrapper}>
             <Picker
               selectedValue={selectedArea}
-              onValueChange={(itemValue) => setSelectedArea(itemValue)}
-              mode="dropdown"
-              style={styles.areaPicker}
-              dropdownIconColor="#102A43"
+              onValueChange={(value) => setSelectedArea(value)}
+              style={styles.picker}
             >
-              <Picker.Item label="Zone 1 - Residential Area" value="Zone 1" />
-              <Picker.Item label="Zone 2 - Residential Area" value="Zone 2" />
-              <Picker.Item label="Zone 3 - Residential Area" value="Zone 3" />
-              <Picker.Item label="Zone 4 - Residential Area" value="Zone 4" />
-              <Picker.Item label="Zone 5 - Residential Area" value="Zone 5" />
+              <Picker.Item label="Zone 1" value="Zone 1" />
+
+              <Picker.Item label="Zone 2" value="Zone 2" />
+
+              <Picker.Item label="Zone 3" value="Zone 3" />
+
+              <Picker.Item label="Zone 4" value="Zone 4" />
+
+              <Picker.Item label="Zone 5" value="Zone 5" />
             </Picker>
           </View>
         </View>
 
-        {/* DATE */}
+        {/* ===================================================
+            COLLECTION DATE
+        =================================================== */}
+
+        <Text style={styles.sectionTitle}>Collection Date</Text>
 
         <TouchableOpacity
-          style={styles.inputBox}
+          style={styles.inputCard}
+          activeOpacity={0.8}
           onPress={() => setShowDatePicker(true)}
-          disabled={submitting}
         >
-          <Text style={styles.inputIcon}>📅</Text>
+          <View style={styles.dateRow}>
+            <View style={styles.smallIconBox}>
+              <Ionicons name="calendar-outline" size={20} color={BLUE} />
+            </View>
 
-          <View style={styles.dateContent}>
-            <Text style={styles.inputMainText}>{formattedDate}</Text>
+            <View style={styles.dateTextContainer}>
+              <Text style={styles.inputTitle}>Scheduled Date</Text>
 
-            <Text style={styles.inputSubText}>
-              Tap to select collection date
-            </Text>
+              <Text style={styles.dateValue}>{formatDate(selectedDate)}</Text>
+            </View>
+
+            <Ionicons name="chevron-forward" size={20} color={MUTED} />
           </View>
         </TouchableOpacity>
 
@@ -314,314 +804,502 @@ export default function ReportScreen() {
           <DateTimePicker
             value={selectedDate}
             mode="date"
-            display="calendar"
-            onChange={handleDateChange}
+            display="default"
+            onChange={(event, date) => {
+              setShowDatePicker(false);
+
+              if (date) {
+                setSelectedDate(date);
+              }
+            }}
           />
         )}
 
-        {/* WASTE TYPE */}
+        {/* ===================================================
+            WASTE TYPE
+        =================================================== */}
 
-        <Text style={styles.label}>Waste Type</Text>
+        <Text style={styles.sectionTitle}>Waste Type</Text>
 
-        <View style={styles.inputBox}>
-          <Text style={styles.inputIcon}>♻</Text>
+        <View style={styles.inputCard}>
+          <View style={styles.inputHeader}>
+            <View style={styles.smallIconBox}>
+              <Ionicons name="leaf-outline" size={20} color={GREEN} />
+            </View>
 
-          <Picker
-            selectedValue={selectedWasteType}
-            onValueChange={(itemValue) => setSelectedWasteType(itemValue)}
-            mode="dropdown"
-            style={styles.wasteTypePicker}
-            dropdownIconColor="#102A43"
-          >
-            <Picker.Item label="General Waste" value="General Waste" />
-            <Picker.Item label="Recyclable Waste" value="Recyclable Waste" />
-            <Picker.Item
-              label="Non-Biodegradable Waste"
-              value="Non-Biodegradable Waste"
-            />
-          </Picker>
+            <View>
+              <Text style={styles.inputTitle}>Type of waste</Text>
+
+              <Text style={styles.inputSubtitle}>
+                Select the type of waste involved
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.pickerWrapper}>
+            <Picker
+              selectedValue={selectedWasteType}
+              onValueChange={(value) => setSelectedWasteType(value)}
+              style={styles.picker}
+            >
+              <Picker.Item label="General Waste" value="General Waste" />
+
+              <Picker.Item label="Recyclable Waste" value="Recyclable Waste" />
+
+              <Picker.Item
+                label="Non-Biodegradable Waste"
+                value="Non-Biodegradable Waste"
+              />
+            </Picker>
+          </View>
         </View>
 
-        {/* ISSUE */}
+        {/* ===================================================
+            COLLECTION ISSUE
+        =================================================== */}
 
         <Text style={styles.sectionTitle}>Collection Issue</Text>
 
-        <Text style={styles.smallDescription}>
-          Select the issue that best describes your collection status.
+        <Text style={styles.sectionDescription}>
+          What happened with your garbage collection?
         </Text>
 
-        <View style={styles.issueContainer}>
-          {issues.map((issue) => (
+        {issues.map((issue) => {
+          const selected = selectedIssue === issue.label;
+
+          return (
             <TouchableOpacity
-              key={issue}
-              style={[
-                styles.issueButton,
-                selectedIssue === issue && styles.issueButtonSelected,
-              ]}
-              onPress={() => setSelectedIssue(issue)}
-              disabled={submitting}
+              key={issue.label}
+              style={[styles.issueCard, selected && styles.issueCardSelected]}
+              activeOpacity={0.8}
+              onPress={() => setSelectedIssue(issue.label)}
             >
               <View
-                style={[
-                  styles.radio,
-                  selectedIssue === issue && styles.radioSelected,
-                ]}
+                style={[styles.issueIcon, selected && styles.issueIconSelected]}
               >
-                {selectedIssue === issue && <View style={styles.radioDot} />}
+                <Ionicons
+                  name={issue.icon as any}
+                  size={22}
+                  color={selected ? GREEN : MUTED}
+                />
               </View>
 
-              <Text
+              <View style={styles.issueContent}>
+                <Text
+                  style={[
+                    styles.issueTitle,
+                    selected && styles.issueTitleSelected,
+                  ]}
+                >
+                  {issue.label}
+                </Text>
+
+                <Text style={styles.issueDescription}>{issue.description}</Text>
+              </View>
+
+              <View
                 style={[
-                  styles.issueText,
-                  selectedIssue === issue && styles.issueTextSelected,
+                  styles.radioOuter,
+                  selected && styles.radioOuterSelected,
                 ]}
               >
-                {issue}
-              </Text>
+                {selected && <View style={styles.radioInner} />}
+              </View>
             </TouchableOpacity>
-          ))}
+          );
+        })}
+
+        {/* ===================================================
+            DESCRIPTION
+        =================================================== */}
+
+        <Text style={styles.sectionTitle}>Description</Text>
+
+        <View style={styles.descriptionCard}>
+          <TextInput
+            style={styles.descriptionInput}
+            placeholder="Describe what happened..."
+            placeholderTextColor="#9CA3AF"
+            multiline
+            textAlignVertical="top"
+            value={description}
+            onChangeText={setDescription}
+          />
+
+          <Text style={styles.characterCount}>
+            {description.length} characters
+          </Text>
         </View>
 
-        {/* DESCRIPTION */}
+        {/* ===================================================
+            PHOTO EVIDENCE
+        =================================================== */}
 
-        <Text style={styles.label}>Additional Details</Text>
+        <Text style={styles.sectionTitle}>Photo Evidence</Text>
 
-        <TextInput
-          style={styles.descriptionInput}
-          placeholder="Describe the collection issue..."
-          placeholderTextColor="#94A3B8"
-          multiline
-          textAlignVertical="top"
-          value={description}
-          onChangeText={setDescription}
-          editable={!submitting}
-        />
+        <View style={styles.photoCard}>
+          {photo ? (
+            <>
+              <Image source={{ uri: photo }} style={styles.photoPreview} />
 
-        <Text style={styles.helperText}>
-          Example: The collection vehicle has not arrived during the scheduled
-          collection period.
+              <View style={styles.photoActions}>
+                <TouchableOpacity
+                  style={styles.photoActionButton}
+                  onPress={openCamera}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="camera-outline" size={19} color={GREEN} />
+
+                  <Text style={styles.photoActionText}>Retake Photo</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.photoActionButton, styles.removePhotoButton]}
+                  onPress={() => setPhoto(null)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="trash-outline" size={19} color={RED} />
+
+                  <Text
+                    style={[styles.photoActionText, styles.removePhotoText]}
+                  >
+                    Remove
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <TouchableOpacity
+              style={styles.photoEmpty}
+              activeOpacity={0.8}
+              onPress={openCamera}
+            >
+              <View style={styles.photoIcon}>
+                <Ionicons name="camera-outline" size={30} color={GREEN} />
+              </View>
+
+              <Text style={styles.photoTitle}>Take a Photo</Text>
+
+              <Text style={styles.photoSubtitle}>
+                Add a photo to help us understand the issue
+              </Text>
+
+              <View style={styles.cameraButton}>
+                <Ionicons name="camera" size={18} color={WHITE} />
+
+                <Text style={styles.cameraButtonText}>Open Camera</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* ===================================================
+            COLLECTION LOCATION
+        =================================================== */}
+
+        <Text style={styles.sectionTitle}>Collection Location</Text>
+
+        <Text style={styles.sectionDescription}>
+          Search for the actual place where the collection issue occurred.
         </Text>
 
-        {/* PHOTO */}
+        {/* ===================================================
+            PLACE SEARCH
+        =================================================== */}
 
-        <Text style={styles.label}>Photo Evidence</Text>
+        <View style={styles.placeSearchCard}>
+          <View style={styles.placeSearchRow}>
+            <Ionicons name="search-outline" size={21} color={MUTED} />
 
-        <TouchableOpacity
-          style={styles.cameraButton}
-          onPress={handleTakePhoto}
-          disabled={submitting}
-        >
-          <Text style={styles.cameraIcon}>📷</Text>
+            <TextInput
+              style={styles.placeSearchInput}
+              placeholder="Search a place or address"
+              placeholderTextColor="#9CA3AF"
+              value={placeQuery}
+              onChangeText={(text) => {
+                setPlaceQuery(text);
 
-          <View style={styles.cameraContent}>
-            <Text style={styles.cameraTitle}>
-              {photo ? "Photo Captured" : "Take Photo"}
-            </Text>
+                if (selectedPlace && text !== selectedPlace.name) {
+                  setSelectedPlace(null);
+                }
+              }}
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
+            />
 
-            <Text style={styles.cameraSubtitle}>
-              {photo
-                ? "Garbage collection issue photo attached"
-                : "Take a photo of the collection issue"}
-            </Text>
+            {placeQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={clearSelectedPlace}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close-circle" size={21} color="#9CA3AF" />
+              </TouchableOpacity>
+            )}
           </View>
-        </TouchableOpacity>
 
-        {/* PHOTO PREVIEW */}
+          {/* SEARCHING */}
 
-        {photo && (
-          <View style={styles.photoPreviewContainer}>
-            <Image source={{ uri: photo }} style={styles.photoPreview} />
+          {searchingPlaces && (
+            <View style={styles.searchingRow}>
+              <ActivityIndicator size="small" color={GREEN} />
 
-            <TouchableOpacity
-              style={styles.retakeButton}
-              onPress={handleTakePhoto}
-              disabled={submitting}
-            >
-              <Text style={styles.retakeText}>📷 Retake Photo</Text>
-            </TouchableOpacity>
+              <Text style={styles.searchingText}>Searching Google Maps...</Text>
+            </View>
+          )}
+
+          {/* SUGGESTIONS */}
+
+          {!searchingPlaces && placeSuggestions.length > 0 && (
+            <View style={styles.suggestionsContainer}>
+              {placeSuggestions.map((suggestion, index) => {
+                const prediction = suggestion.placePrediction;
+
+                if (!prediction) {
+                  return null;
+                }
+
+                const mainText =
+                  prediction.structuredFormat?.mainText?.text ||
+                  prediction.text?.text ||
+                  "Place";
+
+                const secondaryText =
+                  prediction.structuredFormat?.secondaryText?.text || "";
+
+                return (
+                  <TouchableOpacity
+                    key={prediction.placeId || `${mainText}-${index}`}
+                    style={styles.suggestionItem}
+                    activeOpacity={0.7}
+                    onPress={() => handleSelectPlace(suggestion)}
+                  >
+                    <View style={styles.suggestionIcon}>
+                      <Ionicons
+                        name="location-outline"
+                        size={20}
+                        color={GREEN}
+                      />
+                    </View>
+
+                    <View style={styles.suggestionTextContainer}>
+                      <Text style={styles.suggestionMain} numberOfLines={1}>
+                        {mainText}
+                      </Text>
+
+                      {secondaryText ? (
+                        <Text
+                          style={styles.suggestionSecondary}
+                          numberOfLines={2}
+                        >
+                          {secondaryText}
+                        </Text>
+                      ) : null}
+                    </View>
+
+                    <Ionicons
+                      name="chevron-forward"
+                      size={18}
+                      color="#9CA3AF"
+                    />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {/* ===================================================
+            SELECTING PLACE
+        =================================================== */}
+
+        {selectingPlace && (
+          <View style={styles.selectingPlaceCard}>
+            <ActivityIndicator size="small" color={GREEN} />
+
+            <Text style={styles.selectingPlaceText}>Loading place...</Text>
           </View>
         )}
 
-        {/* MAP */}
+        {/* ===================================================
+            GOOGLE MAP
+        =================================================== */}
 
-        <Text style={styles.label}>Collection Location</Text>
-
-        <Text style={styles.mapDescription}>
-          Tap anywhere on the map to select the exact location of the collection
-          issue.
-        </Text>
-
-        <View style={styles.mapContainer}>
+        <View style={styles.mapCard}>
           <MapView
+            ref={mapRef}
+            provider={PROVIDER_GOOGLE}
             style={styles.map}
+            mapType="standard"
             initialRegion={{
-              latitude: location.latitude,
-              longitude: location.longitude,
-              latitudeDelta: 5,
-              longitudeDelta: 5,
+              latitude: DEFAULT_LOCATION.latitude,
+              longitude: DEFAULT_LOCATION.longitude,
+              latitudeDelta: 0.05,
+              longitudeDelta: 0.05,
             }}
-            onPress={handleMapPress}
+            zoomEnabled
+            scrollEnabled
+            rotateEnabled
+            pitchEnabled
+            showsCompass
+            showsScale
+            showsBuildings
+            showsTraffic={false}
+            showsUserLocation={false}
           >
-            <Marker
-              coordinate={location}
-              title="Collection Issue"
-              description="Selected collection location"
-            />
+            {selectedPlace && (
+              <Marker
+                coordinate={location}
+                title={selectedPlace.name}
+                description={selectedPlace.address}
+                pinColor={GREEN}
+              />
+            )}
           </MapView>
-        </View>
 
-        {/* SELECTED LOCATION */}
+          {/* MAP LABEL */}
 
-        <View style={styles.selectedLocationCard}>
-          <View style={styles.selectedLocationIcon}>
-            <Text style={styles.selectedLocationIconText}>📍</Text>
+          <View pointerEvents="none" style={styles.mapTopLabel}>
+            <View style={styles.mapTopIcon}>
+              <Ionicons name="logo-google" size={17} color={GREEN} />
+            </View>
+
+            <Text style={styles.mapTopText}>Google Maps</Text>
           </View>
 
-          <View style={styles.selectedLocationContent}>
-            <Text style={styles.selectedLocationTitle}>Selected Location</Text>
+          {/* MAP INSTRUCTION */}
 
-            <Text style={styles.selectedLocationText}>
-              Latitude: {location.latitude.toFixed(6)}
-            </Text>
+          {!selectedPlace && (
+            <View pointerEvents="none" style={styles.mapInstruction}>
+              <Ionicons name="search-outline" size={18} color={GREEN} />
 
-            <Text style={styles.selectedLocationText}>
-              Longitude: {location.longitude.toFixed(6)}
-            </Text>
-          </View>
+              <Text style={styles.mapInstructionText}>
+                Search above to select a real place
+              </Text>
+            </View>
+          )}
         </View>
 
-        {/* SUBMIT */}
+        {/* ===================================================
+            SELECTED PLACE
+        =================================================== */}
+
+        {selectedPlace ? (
+          <View style={styles.selectedPlaceCard}>
+            <View style={styles.selectedPlaceIcon}>
+              <Ionicons name="location" size={22} color={GREEN} />
+            </View>
+
+            <View style={styles.selectedPlaceContent}>
+              <View style={styles.selectedPlaceTitleRow}>
+                <Text style={styles.selectedPlaceTitle} numberOfLines={2}>
+                  {selectedPlace.name}
+                </Text>
+
+                <View style={styles.selectedBadge}>
+                  <Text style={styles.selectedBadgeText}>SELECTED</Text>
+                </View>
+              </View>
+
+              <Text style={styles.selectedPlaceAddress} numberOfLines={3}>
+                {selectedPlace.address}
+              </Text>
+
+              <View style={styles.coordinatesRow}>
+                <Text style={styles.locationCoordinates}>
+                  {location.latitude.toFixed(6)}
+                </Text>
+
+                <Text style={styles.coordinateSeparator}>•</Text>
+
+                <Text style={styles.locationCoordinates}>
+                  {location.longitude.toFixed(6)}
+                </Text>
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.locationCard}>
+            <View style={styles.locationIcon}>
+              <Ionicons name="search-outline" size={21} color={GREEN} />
+            </View>
+
+            <View style={styles.locationContent}>
+              <Text style={styles.locationTitle}>No place selected</Text>
+
+              <Text style={styles.locationCoordinates}>
+                Search above and select a Google Maps place.
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* ===================================================
+            SUBMIT
+        =================================================== */}
 
         <TouchableOpacity
           style={[
             styles.submitButton,
-            (!selectedIssue || !description.trim() || submitting) &&
-              styles.submitButtonDisabled,
+            submitting && styles.submitButtonDisabled,
           ]}
+          activeOpacity={0.85}
           onPress={handleSubmit}
-          disabled={!selectedIssue || !description.trim() || submitting}
+          disabled={submitting}
         >
           {submitting ? (
-            <>
-              <ActivityIndicator size="small" color="#FFFFFF" />
-
-              <Text style={styles.submitText}>Saving Update...</Text>
-            </>
+            <ActivityIndicator size="small" color={WHITE} />
           ) : (
             <>
-              <Text style={styles.submitIcon}>✓</Text>
+              <Ionicons name="send-outline" size={21} color={WHITE} />
 
-              <Text style={styles.submitText}>Submit Collection Update</Text>
+              <Text style={styles.submitButtonText}>Submit Report</Text>
             </>
           )}
         </TouchableOpacity>
 
-        {/* WHAT HAPPENS NEXT */}
-
-        <Text style={styles.sectionTitle}>What Happens Next?</Text>
-
-        <View style={styles.processCard}>
-          {/* STEP 1 */}
-
-          <View style={styles.processStep}>
-            <View style={styles.processCircle}>
-              <Text style={styles.processNumber}>1</Text>
-            </View>
-
-            <View style={styles.processContent}>
-              <Text style={styles.processTitle}>Update Submitted</Text>
-
-              <Text style={styles.processDescription}>
-                Your collection issue will be recorded in the system.
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.processLine} />
-
-          {/* STEP 2 */}
-
-          <View style={styles.processStep}>
-            <View style={styles.processCircle}>
-              <Text style={styles.processNumber}>2</Text>
-            </View>
-
-            <View style={styles.processContent}>
-              <Text style={styles.processTitle}>
-                Collection Personnel Notified
-              </Text>
-
-              <Text style={styles.processDescription}>
-                Authorized personnel can review the reported collection issue.
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.processLine} />
-
-          {/* STEP 3 */}
-
-          <View style={styles.processStep}>
-            <View style={styles.processCircle}>
-              <Text style={styles.processNumber}>3</Text>
-            </View>
-
-            <View style={styles.processContent}>
-              <Text style={styles.processTitle}>Collection Status Updated</Text>
-
-              <Text style={styles.processDescription}>
-                The collection status can be updated and monitored through the
-                system.
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* MONITORING NOTICE */}
-
-        <View style={styles.monitoringCard}>
-          <View style={styles.monitoringIcon}>
-            <Text style={styles.monitoringIconText}>●</Text>
-          </View>
-
-          <View style={styles.monitoringContent}>
-            <Text style={styles.monitoringTitle}>Monitor Your Collection</Text>
-
-            <Text style={styles.monitoringText}>
-              After submitting an update, check the Monitoring tab to view the
-              latest collection status.
-            </Text>
-          </View>
-        </View>
-
-        <View style={{ height: 30 }} />
+        <Text style={styles.bottomNote}>
+          Your report will be reviewed by the garbage collection team.
+        </Text>
       </ScrollView>
-    </SafeAreaContextView>
+    </SafeAreaView>
   );
 }
 
+/* =========================================================
+   STYLES
+========================================================= */
+
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
-    backgroundColor: "#F5F7FA",
+    backgroundColor: BACKGROUND,
   },
 
-  scrollContent: {
-    paddingBottom: 20,
+  container: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 40,
   },
 
   /* HEADER */
 
   header: {
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 18,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E2E8F0",
+    marginBottom: 18,
+  },
+
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: WHITE,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
 
   headerTextContainer: {
@@ -629,301 +1307,536 @@ const styles = StyleSheet.create({
   },
 
   headerTitle: {
-    fontSize: 23,
+    fontSize: 25,
     fontWeight: "800",
-    color: "#102A43",
+    color: TEXT,
   },
 
   headerSubtitle: {
-    fontSize: 11,
-    color: "#64748B",
-    marginTop: 4,
+    fontSize: 13,
+    color: MUTED,
+    marginTop: 3,
   },
 
-  headerIcon: {
-    width: 43,
-    height: 43,
-    borderRadius: 22,
-    backgroundColor: "#E8F7F0",
-    justifyContent: "center",
-    alignItems: "center",
-    marginLeft: 10,
-  },
-
-  headerIconText: {
-    fontSize: 20,
-    fontWeight: "900",
-    color: "#087F5B",
-  },
-
-  /* INFORMATION */
+  /* INFO */
 
   infoCard: {
-    marginHorizontal: 18,
-    marginTop: 16,
-    padding: 14,
-    backgroundColor: "#E8F7F0",
-    borderRadius: 15,
     flexDirection: "row",
+    backgroundColor: GREEN_LIGHT,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#D1F0E4",
   },
 
   infoIcon: {
-    width: 35,
-    height: 35,
-    borderRadius: 18,
-    backgroundColor: "#FFFFFF",
-    justifyContent: "center",
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: WHITE,
     alignItems: "center",
-  },
-
-  infoIconText: {
-    color: "#087F5B",
-    fontSize: 17,
-    fontWeight: "900",
+    justifyContent: "center",
+    marginRight: 12,
   },
 
   infoContent: {
     flex: 1,
-    marginLeft: 10,
   },
 
   infoTitle: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: "800",
-    color: "#102A43",
+    color: TEXT,
+    marginBottom: 4,
   },
 
   infoText: {
-    fontSize: 11,
-    lineHeight: 17,
-    color: "#64748B",
-    marginTop: 3,
+    fontSize: 13,
+    lineHeight: 19,
+    color: MUTED,
   },
 
-  /* SECTION */
+  /* SECTIONS */
 
   sectionTitle: {
-    marginHorizontal: 18,
-    marginTop: 22,
+    fontSize: 18,
+    fontWeight: "800",
+    color: TEXT,
     marginBottom: 8,
-    fontSize: 19,
-    fontWeight: "800",
-    color: "#102A43",
+    marginTop: 5,
   },
 
-  smallDescription: {
-    marginHorizontal: 18,
-    marginBottom: 10,
-    fontSize: 10,
-    lineHeight: 15,
-    color: "#64748B",
-  },
-
-  /* LABEL */
-
-  label: {
-    marginHorizontal: 18,
-    marginTop: 20,
-    marginBottom: 7,
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#334155",
-  },
-
-  /* COLLECTION INFORMATION */
-
-  inputBox: {
-    marginHorizontal: 18,
+  sectionDescription: {
+    fontSize: 13,
+    color: MUTED,
+    lineHeight: 19,
     marginBottom: 12,
-    minHeight: 62,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 13,
-    paddingHorizontal: 14,
+  },
+
+  /* COLLECTION */
+
+  collectionCard: {
+    backgroundColor: WHITE,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 22,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  collectionTop: {
     flexDirection: "row",
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
   },
 
-  inputIcon: {
-    fontSize: 20,
+  collectionIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+
+  collectionInfo: {
+    flex: 1,
+  },
+
+  collectionLabel: {
+    fontSize: 12,
+    color: MUTED,
+    marginBottom: 3,
+  },
+
+  collectionType: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: TEXT,
+  },
+
+  activeBadge: {
+    backgroundColor: GREEN_LIGHT,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+
+  activeBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: GREEN,
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: BORDER,
+    marginVertical: 15,
+  },
+
+  collectionDetails: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+
+  detailItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+
+  detailLabel: {
+    fontSize: 11,
+    color: MUTED,
+    marginLeft: 8,
+    marginBottom: 2,
+  },
+
+  detailValue: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: TEXT,
+    marginLeft: 8,
+  },
+
+  /* INPUT CARDS */
+
+  inputCard: {
+    backgroundColor: WHITE,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  inputHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+
+  smallIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
     marginRight: 11,
   },
 
-  inputMainText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#102A43",
+  inputTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
   },
 
-  inputSubText: {
-    fontSize: 10,
-    color: "#64748B",
+  inputSubtitle: {
+    fontSize: 12,
+    color: MUTED,
     marginTop: 3,
+  },
+
+  pickerWrapper: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 13,
+    overflow: "hidden",
+    backgroundColor: "#FAFAFA",
+  },
+
+  picker: {
+    height: 52,
+    color: TEXT,
+  },
+
+  /* DATE */
+
+  dateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  dateTextContainer: {
+    flex: 1,
+  },
+
+  dateValue: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: GREEN,
+    marginTop: 4,
   },
 
   /* ISSUE */
 
-  issueContainer: {
-    marginHorizontal: 18,
-  },
-
-  issueButton: {
-    minHeight: 49,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    marginBottom: 8,
-    paddingHorizontal: 13,
+  issueCard: {
+    backgroundColor: WHITE,
+    borderRadius: 17,
+    padding: 14,
+    marginBottom: 10,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: BORDER,
   },
 
-  issueButtonSelected: {
-    backgroundColor: "#E8F7F0",
-    borderColor: "#087F5B",
+  issueCardSelected: {
+    borderColor: GREEN,
+    backgroundColor: "#F3FBF8",
   },
 
-  radio: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: "#CBD5E1",
-    justifyContent: "center",
+  issueIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    backgroundColor: "#F3F4F6",
     alignItems: "center",
-    marginRight: 10,
+    justifyContent: "center",
+    marginRight: 11,
   },
 
-  radioSelected: {
-    borderColor: "#087F5B",
+  issueIconSelected: {
+    backgroundColor: GREEN_LIGHT,
   },
 
-  radioDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#087F5B",
+  issueContent: {
+    flex: 1,
   },
 
-  issueText: {
-    fontSize: 12,
-    color: "#475569",
+  issueTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
+    marginBottom: 3,
   },
 
-  issueTextSelected: {
-    color: "#087F5B",
-    fontWeight: "700",
+  issueTitleSelected: {
+    color: GREEN_DARK,
+  },
+
+  issueDescription: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: MUTED,
+    paddingRight: 6,
+  },
+
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#D1D5DB",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+  },
+
+  radioOuterSelected: {
+    borderColor: GREEN,
+  },
+
+  radioInner: {
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+    backgroundColor: GREEN,
   },
 
   /* DESCRIPTION */
 
-  descriptionInput: {
-    marginHorizontal: 18,
-    height: 115,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 13,
+  descriptionCard: {
+    backgroundColor: WHITE,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 20,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 14,
-    paddingTop: 13,
+    borderColor: BORDER,
+  },
+
+  descriptionInput: {
+    minHeight: 125,
+    fontSize: 14,
+    color: TEXT,
+    lineHeight: 21,
+  },
+
+  characterCount: {
+    textAlign: "right",
+    color: MUTED,
+    fontSize: 11,
+    marginTop: 5,
+  },
+
+  /* PHOTO */
+
+  photoCard: {
+    backgroundColor: WHITE,
+    borderRadius: 18,
+    overflow: "hidden",
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+
+  photoEmpty: {
+    alignItems: "center",
+    padding: 24,
+  },
+
+  photoIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+
+  photoTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: TEXT,
+  },
+
+  photoSubtitle: {
     fontSize: 12,
-    color: "#102A43",
+    color: MUTED,
+    textAlign: "center",
+    marginTop: 5,
+    marginBottom: 16,
   },
-
-  helperText: {
-    marginHorizontal: 18,
-    marginTop: 6,
-    fontSize: 9,
-    lineHeight: 14,
-    color: "#94A3B8",
-  },
-
-  /* CAMERA */
 
   cameraButton: {
-    marginHorizontal: 18,
-    minHeight: 65,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GREEN,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 11,
   },
 
-  cameraIcon: {
-    fontSize: 25,
-    marginRight: 12,
-  },
-
-  cameraContent: {
-    flex: 1,
-  },
-
-  cameraTitle: {
+  cameraButtonText: {
+    color: WHITE,
     fontSize: 13,
     fontWeight: "800",
-    color: "#102A43",
-  },
-
-  cameraSubtitle: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 3,
-  },
-
-  photoPreviewContainer: {
-    marginHorizontal: 18,
-    marginTop: 10,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 13,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+    marginLeft: 7,
   },
 
   photoPreview: {
     width: "100%",
-    height: 180,
-    borderRadius: 10,
+    height: 220,
+    resizeMode: "cover",
   },
 
-  retakeButton: {
-    marginTop: 8,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: "#E8F7F0",
-    justifyContent: "center",
+  photoActions: {
+    flexDirection: "row",
+    padding: 12,
+    gap: 10,
+  },
+
+  photoActionButton: {
+    flex: 1,
+    height: 44,
+    borderRadius: 11,
+    backgroundColor: GREEN_LIGHT,
     alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
   },
 
-  retakeText: {
-    color: "#087F5B",
-    fontSize: 11,
+  photoActionText: {
+    color: GREEN,
+    fontSize: 12,
     fontWeight: "800",
+    marginLeft: 6,
+  },
+
+  removePhotoButton: {
+    backgroundColor: RED_LIGHT,
+  },
+
+  removePhotoText: {
+    color: RED,
+  },
+
+  /* PLACE SEARCH */
+
+  placeSearchCard: {
+    backgroundColor: WHITE,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    marginBottom: 12,
+    overflow: "hidden",
+    zIndex: 20,
+  },
+
+  placeSearchRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 15,
+  },
+
+  placeSearchInput: {
+    flex: 1,
+    height: 54,
+    fontSize: 14,
+    color: TEXT,
+    marginLeft: 10,
+  },
+
+  searchingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+
+  searchingText: {
+    fontSize: 12,
+    color: MUTED,
+    marginLeft: 8,
+  },
+
+  suggestionsContainer: {
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+
+  suggestionItem: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F1F2F4",
+  },
+
+  suggestionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+
+  suggestionTextContainer: {
+    flex: 1,
+    marginRight: 8,
+  },
+
+  suggestionMain: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: TEXT,
+  },
+
+  suggestionSecondary: {
+    fontSize: 11,
+    color: MUTED,
+    marginTop: 3,
+    lineHeight: 15,
+  },
+
+  selectingPlaceCard: {
+    backgroundColor: GREEN_LIGHT,
+    borderRadius: 13,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+
+  selectingPlaceText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GREEN_DARK,
+    marginLeft: 8,
   },
 
   /* MAP */
 
-  mapDescription: {
-    marginHorizontal: 18,
-    marginBottom: 8,
-    fontSize: 10,
-    lineHeight: 15,
-    color: "#64748B",
-  },
-
-  mapContainer: {
-    marginHorizontal: 18,
-    height: 230,
-    borderRadius: 15,
+  mapCard: {
+    height: 300,
+    borderRadius: 18,
     overflow: "hidden",
-    backgroundColor: "#E2E8F0",
+    backgroundColor: WHITE,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: BORDER,
+    marginBottom: 12,
+    position: "relative",
   },
 
   map: {
@@ -931,205 +1844,208 @@ const styles = StyleSheet.create({
     height: "100%",
   },
 
-  /* SELECTED LOCATION */
-
-  selectedLocationCard: {
-    marginHorizontal: 18,
-    marginTop: 10,
-    padding: 12,
-    backgroundColor: "#E8F7F0",
-    borderRadius: 13,
+  mapTopLabel: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    backgroundColor: WHITE,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 4,
   },
 
-  selectedLocationIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#FFFFFF",
-    justifyContent: "center",
+  mapTopIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: GREEN_LIGHT,
     alignItems: "center",
+    justifyContent: "center",
+    marginRight: 7,
   },
 
-  selectedLocationIconText: {
-    fontSize: 18,
-  },
-
-  selectedLocationContent: {
-    flex: 1,
-    marginLeft: 10,
-  },
-
-  selectedLocationTitle: {
+  mapTopText: {
     fontSize: 12,
     fontWeight: "800",
-    color: "#102A43",
-    marginBottom: 3,
+    color: TEXT,
   },
 
-  selectedLocationText: {
-    fontSize: 9,
-    color: "#64748B",
-    lineHeight: 14,
+  mapInstruction: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: WHITE,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 4,
+  },
+
+  mapInstructionText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#374151",
+    marginLeft: 7,
+  },
+
+  /* SELECTED PLACE */
+
+  selectedPlaceCard: {
+    backgroundColor: WHITE,
+    borderRadius: 17,
+    padding: 14,
+    flexDirection: "row",
+    borderWidth: 1,
+    borderColor: "#BDE8D8",
+    marginBottom: 24,
+  },
+
+  selectedPlaceIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  selectedPlaceContent: {
+    flex: 1,
+  },
+
+  selectedPlaceTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+
+  selectedPlaceTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "800",
+    color: TEXT,
+    marginRight: 8,
+  },
+
+  selectedBadge: {
+    backgroundColor: GREEN_LIGHT,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 7,
+  },
+
+  selectedBadgeText: {
+    fontSize: 8,
+    fontWeight: "900",
+    color: GREEN,
+  },
+
+  selectedPlaceAddress: {
+    fontSize: 12,
+    color: MUTED,
+    lineHeight: 17,
+    marginTop: 5,
+  },
+
+  coordinatesRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 7,
+  },
+
+  coordinateSeparator: {
+    color: MUTED,
+    marginHorizontal: 6,
+    fontSize: 11,
+  },
+
+  /* LOCATION */
+
+  locationCard: {
+    backgroundColor: WHITE,
+    borderRadius: 17,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: BORDER,
+    marginBottom: 24,
+  },
+
+  locationIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 13,
+    backgroundColor: GREEN_LIGHT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 11,
+  },
+
+  locationContent: {
+    flex: 1,
+  },
+
+  locationTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: TEXT,
+    marginBottom: 4,
+  },
+
+  locationCoordinates: {
+    fontSize: 11,
+    color: MUTED,
+    marginTop: 2,
   },
 
   /* SUBMIT */
 
   submitButton: {
-    marginHorizontal: 18,
-    marginTop: 20,
-    height: 52,
-    borderRadius: 13,
-    backgroundColor: "#087F5B",
-    justifyContent: "center",
+    height: 55,
+    borderRadius: 15,
+    backgroundColor: GREEN,
     alignItems: "center",
+    justifyContent: "center",
     flexDirection: "row",
+    marginBottom: 12,
   },
 
   submitButtonDisabled: {
-    backgroundColor: "#A7CFC0",
+    opacity: 0.7,
   },
 
-  submitIcon: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "900",
-    marginRight: 8,
-  },
-
-  submitText: {
-    color: "#FFFFFF",
-    fontSize: 14,
+  submitButtonText: {
+    color: WHITE,
+    fontSize: 15,
     fontWeight: "800",
     marginLeft: 8,
   },
 
-  /* PROCESS */
-
-  processCard: {
-    marginHorizontal: 18,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 15,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-
-  processStep: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
-  processCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#E8F7F0",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  processNumber: {
-    color: "#087F5B",
-    fontSize: 12,
-    fontWeight: "900",
-  },
-
-  processContent: {
-    flex: 1,
-    marginLeft: 11,
-  },
-
-  processTitle: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#102A43",
-  },
-
-  processDescription: {
-    fontSize: 10,
-    color: "#64748B",
-    lineHeight: 15,
-    marginTop: 3,
-  },
-
-  processLine: {
-    width: 2,
-    height: 20,
-    backgroundColor: "#D6E8E0",
-    marginLeft: 15,
-    marginVertical: 4,
-  },
-
-  /* MONITORING */
-
-  monitoringCard: {
-    marginHorizontal: 18,
-    marginTop: 14,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    flexDirection: "row",
-  },
-
-  monitoringIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#E8F7F0",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  monitoringIconText: {
-    color: "#087F5B",
-    fontSize: 12,
-  },
-
-  monitoringContent: {
-    flex: 1,
-    marginLeft: 10,
-  },
-
-  monitoringTitle: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#102A43",
-  },
-
-  monitoringText: {
-    fontSize: 10,
-    color: "#64748B",
-    lineHeight: 15,
-    marginTop: 3,
-  },
-
-  /* PICKER */
-
-  areaPickerContainer: {
-    flex: 1,
-  },
-
-  areaPicker: {
-    width: "100%",
-    height: 55,
-    color: "#102A43",
-  },
-
-  /* DATE */
-
-  dateContent: {
-    flex: 1,
-  },
-
-  /* WASTE TYPE */
-
-  wasteTypePicker: {
-    width: "90%",
-    height: 55,
-    color: "#102A43",
+  bottomNote: {
+    textAlign: "center",
+    fontSize: 11,
+    color: MUTED,
+    lineHeight: 17,
+    paddingHorizontal: 20,
   },
 });
