@@ -3,6 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Picker } from "@react-native-picker/picker";
 import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
 import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -11,6 +12,7 @@ import {
   Alert,
   Image,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -20,7 +22,10 @@ import {
 
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from "react-native-maps";
 
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
 import {
   getPlaceDetails,
@@ -119,6 +124,8 @@ type SelectedPlace = {
 ========================================================= */
 
 export default function ReportScreen() {
+  const insets = useSafeAreaInsets();
+
   /* =======================================================
      BASIC REPORT INFORMATION
   ======================================================= */
@@ -268,6 +275,138 @@ export default function ReportScreen() {
   /* =========================================================
      SELECT GOOGLE PLACE
   ========================================================= */
+
+  
+const handleMapPress = (event: {
+  nativeEvent: {
+    coordinate: {
+      latitude: number;
+      longitude: number;
+    };
+  };
+}) => {
+  const { latitude, longitude } = event.nativeEvent.coordinate;
+
+  const coordinates = {
+    latitude,
+    longitude,
+  };
+
+  // Update the selected coordinates
+  setLocation(coordinates);
+
+  // Save the manually pinned location
+  setSelectedPlace({
+    placeId: `map-pin-${latitude}-${longitude}`,
+    name: "Pinned Map Location",
+    address: `Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`,
+  });
+
+  // Clear the search suggestions
+  setPlaceQuery("");
+  setPlaceSuggestions([]);
+
+  // Move the map to the selected coordinates
+  mapRef.current?.animateToRegion(
+    {
+      ...coordinates,
+      latitudeDelta: 0.008,
+      longitudeDelta: 0.008,
+    },
+    350,
+  );
+};
+
+const handleGetCurrentLocation = async () => {
+  try {
+    const { status } =
+      await Location.requestForegroundPermissionsAsync();
+
+    if (status !== "granted") {
+      Alert.alert(
+        "Location Permission Required",
+        "Please allow location access or select your location manually on the map.",
+      );
+      return;
+    }
+
+    const currentLocation =
+      await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+    const coordinates = {
+      latitude: currentLocation.coords.latitude,
+      longitude: currentLocation.coords.longitude,
+    };
+
+    setLocation(coordinates);
+
+    let placeName = "Current GPS Location";
+    let placeAddress =
+      `Latitude: ${coordinates.latitude.toFixed(6)}, ` +
+      `Longitude: ${coordinates.longitude.toFixed(6)}`;
+
+    try {
+      const addresses = await Location.reverseGeocodeAsync(coordinates);
+      const address = addresses[0];
+
+      if (address) {
+        placeName =
+          address.name ||
+          address.street ||
+          "Current GPS Location";
+
+        placeAddress = [
+          address.name,
+          address.street,
+          address.subregion,
+          address.city,
+          address.region,
+        ]
+          .filter(Boolean)
+          .filter(
+            (value, index, array) =>
+              array.indexOf(value) === index,
+          )
+          .join(", ") || placeAddress;
+      }
+    } catch {
+      // GPS coordinates remain available if address lookup fails.
+    }
+
+    setSelectedPlace({
+      placeId: `gps-${coordinates.latitude}-${coordinates.longitude}`,
+      name: placeName,
+      address: placeAddress,
+    });
+
+    setPlaceQuery("");
+    setPlaceSuggestions([]);
+
+    mapRef.current?.animateToRegion(
+      {
+        ...coordinates,
+        latitudeDelta: 0.008,
+        longitudeDelta: 0.008,
+      },
+      500,
+    );
+
+    Alert.alert(
+      "Location Found",
+      "Your current location has been selected for this report.",
+    );
+  } catch (error) {
+    console.error("GPS location error:", error);
+
+    Alert.alert(
+      "Unable to Get Location",
+      "Please check that your phone's location services are enabled, then try again or select a location on the map.",
+    );
+  }
+};
+
 
   const handleSelectPlace = async (suggestion: PlaceSuggestion) => {
     const prediction = suggestion.placePrediction;
@@ -640,33 +779,43 @@ export default function ReportScreen() {
   ========================================================= */
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={["left", "right", "bottom"]}
+    >
+      <StatusBar backgroundColor="#198754" barStyle="light-content" />
+
+      {/* ===================================================
+          HEADER
+      =================================================== */}
+
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+        <TouchableOpacity
+          style={styles.backButton}
+          activeOpacity={0.8}
+          onPress={() => router.back()}
+        >
+          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+
+        <View style={styles.headerIcon}>
+          <Ionicons name="camera" size={26} color="#FFFFFF" />
+        </View>
+
+        <View style={styles.headerTextContainer}>
+          <Text style={styles.headerTitle}>Report an Issue</Text>
+
+          <Text style={styles.headerSubtitle}>
+            Submit a garbage collection concern
+          </Text>
+        </View>
+      </View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.container}
       >
-        {/* ===================================================
-            HEADER
-        =================================================== */}
-
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            activeOpacity={0.7}
-            onPress={() => router.back()}
-          >
-            <Ionicons name="arrow-back" size={22} color={TEXT} />
-          </TouchableOpacity>
-
-          <View style={styles.headerTextContainer}>
-            <Text style={styles.headerTitle}>Report an Issue</Text>
-
-            <Text style={styles.headerSubtitle}>
-              Submit a garbage collection concern
-            </Text>
-          </View>
-        </View>
 
         {/* ===================================================
             INFO CARD
@@ -1007,108 +1156,11 @@ export default function ReportScreen() {
             PLACE SEARCH
         =================================================== */}
 
-        <View style={styles.placeSearchCard}>
-          <View style={styles.placeSearchRow}>
-            <Ionicons name="search-outline" size={21} color={MUTED} />
-
-            <TextInput
-              style={styles.placeSearchInput}
-              placeholder="Search a place or address"
-              placeholderTextColor="#9CA3AF"
-              value={placeQuery}
-              onChangeText={(text) => {
-                setPlaceQuery(text);
-
-                if (selectedPlace && text !== selectedPlace.name) {
-                  setSelectedPlace(null);
-                }
-              }}
-              autoCorrect={false}
-              autoCapitalize="none"
-              returnKeyType="search"
-            />
-
-            {placeQuery.length > 0 && (
-              <TouchableOpacity
-                onPress={clearSelectedPlace}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="close-circle" size={21} color="#9CA3AF" />
-              </TouchableOpacity>
-            )}
-          </View>
+        
 
           {/* SEARCHING */}
 
-          {searchingPlaces && (
-            <View style={styles.searchingRow}>
-              <ActivityIndicator size="small" color={GREEN} />
-
-              <Text style={styles.searchingText}>Searching Google Maps...</Text>
-            </View>
-          )}
-
-          {/* SUGGESTIONS */}
-
-          {!searchingPlaces && placeSuggestions.length > 0 && (
-            <View style={styles.suggestionsContainer}>
-              {placeSuggestions.map((suggestion, index) => {
-                const prediction = suggestion.placePrediction;
-
-                if (!prediction) {
-                  return null;
-                }
-
-                const mainText =
-                  prediction.structuredFormat?.mainText?.text ||
-                  prediction.text?.text ||
-                  "Place";
-
-                const secondaryText =
-                  prediction.structuredFormat?.secondaryText?.text || "";
-
-                return (
-                  <TouchableOpacity
-                    key={prediction.placeId || `${mainText}-${index}`}
-                    style={styles.suggestionItem}
-                    activeOpacity={0.7}
-                    onPress={() => handleSelectPlace(suggestion)}
-                  >
-                    <View style={styles.suggestionIcon}>
-                      <Ionicons
-                        name="location-outline"
-                        size={20}
-                        color={GREEN}
-                      />
-                    </View>
-
-                    <View style={styles.suggestionTextContainer}>
-                      <Text style={styles.suggestionMain} numberOfLines={1}>
-                        {mainText}
-                      </Text>
-
-                      {secondaryText ? (
-                        <Text
-                          style={styles.suggestionSecondary}
-                          numberOfLines={2}
-                        >
-                          {secondaryText}
-                        </Text>
-                      ) : null}
-                    </View>
-
-                    <Ionicons
-                      name="chevron-forward"
-                      size={18}
-                      color="#9CA3AF"
-                    />
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-        </View>
-
+          
         {/* ===================================================
             SELECTING PLACE
         =================================================== */}
@@ -1126,46 +1178,71 @@ export default function ReportScreen() {
         =================================================== */}
 
         <View style={styles.mapCard}>
-          <MapView
-            ref={mapRef}
-            provider={PROVIDER_GOOGLE}
-            style={styles.map}
-            mapType="standard"
-            initialRegion={{
-              latitude: DEFAULT_LOCATION.latitude,
-              longitude: DEFAULT_LOCATION.longitude,
-              latitudeDelta: 0.05,
-              longitudeDelta: 0.05,
-            }}
-            zoomEnabled
-            scrollEnabled
-            rotateEnabled
-            pitchEnabled
-            showsCompass
-            showsScale
-            showsBuildings
-            showsTraffic={false}
-            showsUserLocation={false}
-          >
-            {selectedPlace && (
-              <Marker
-                coordinate={location}
-                title={selectedPlace.name}
-                description={selectedPlace.address}
-                pinColor={GREEN}
-              />
-            )}
-          </MapView>
+
+          <TouchableOpacity
+  style={styles.locationButton}
+  onPress={handleGetCurrentLocation}
+  activeOpacity={0.8}
+>
+  <Ionicons
+    name="locate-outline"
+    size={20}
+    color="#FFFFFF"
+  />
+  <Text style={styles.locationButtonText}>
+    Use My Current Location
+  </Text>
+</TouchableOpacity>
+          
+<MapView
+  ref={mapRef}
+  provider={PROVIDER_GOOGLE}
+  style={styles.map}
+  mapType="standard"
+  initialRegion={{
+    latitude: DEFAULT_LOCATION.latitude,
+    longitude: DEFAULT_LOCATION.longitude,
+    latitudeDelta: 0.05,
+    longitudeDelta: 0.05,
+  }}
+  onPress={handleMapPress}
+  zoomEnabled
+  scrollEnabled
+  rotateEnabled
+  pitchEnabled
+  showsCompass
+  showsScale
+  showsBuildings
+  showsTraffic={false}
+  showsUserLocation={false}
+>
+  {selectedPlace && (
+    <Marker
+      coordinate={location}
+      title={selectedPlace.name}
+      description={selectedPlace.address}
+      pinColor={GREEN}
+      draggable
+      onDragEnd={(event) => {
+        const { latitude, longitude } =
+          event.nativeEvent.coordinate;
+
+        const coordinates = { latitude, longitude };
+
+        setLocation(coordinates);
+
+        setSelectedPlace({
+          placeId: `map-pin-${latitude}-${longitude}`,
+          name: "Pinned Map Location",
+          address: `Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}`,
+        });
+      }}
+    />
+  )}
+</MapView>
+
 
           {/* MAP LABEL */}
-
-          <View pointerEvents="none" style={styles.mapTopLabel}>
-            <View style={styles.mapTopIcon}>
-              <Ionicons name="logo-google" size={17} color={GREEN} />
-            </View>
-
-            <Text style={styles.mapTopText}>Google Maps</Text>
-          </View>
 
           {/* MAP INSTRUCTION */}
 
@@ -1278,28 +1355,38 @@ const styles = StyleSheet.create({
 
   container: {
     paddingHorizontal: 18,
-    paddingTop: 10,
+    paddingTop: 16,
     paddingBottom: 40,
   },
 
   /* HEADER */
 
   header: {
+    backgroundColor: "#198754",
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 18,
+    paddingHorizontal: 16,
+    paddingBottom: 18,
   },
 
   backButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: WHITE,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.15)",
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
-    borderWidth: 1,
-    borderColor: BORDER,
+  },
+
+  headerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
   },
 
   headerTextContainer: {
@@ -1307,15 +1394,15 @@ const styles = StyleSheet.create({
   },
 
   headerTitle: {
-    fontSize: 25,
+    fontSize: 20,
     fontWeight: "800",
-    color: TEXT,
+    color: "#FFFFFF",
   },
 
   headerSubtitle: {
-    fontSize: 13,
-    color: MUTED,
-    marginTop: 3,
+    fontSize: 12,
+    color: "#DDF5E7",
+    marginTop: 2,
   },
 
   /* INFO */
@@ -2048,4 +2135,22 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     paddingHorizontal: 20,
   },
+
+  locationButton: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+  backgroundColor: "#087F5B",
+  paddingVertical: 13,
+  paddingHorizontal: 16,
+  borderRadius: 10,
+  gap: 8,
+  marginVertical: 10,
+},
+
+locationButtonText: {
+  color: "#FFFFFF",
+  fontSize: 14,
+  fontWeight: "600",
+},
 });

@@ -1,4 +1,4 @@
-const API_URL = "http://192.168.1.28:3000";
+export const API_URL = "http://10.242.61.132:3000";
 
 // ==========================================
 // TEST BACKEND
@@ -13,7 +13,7 @@ export async function testBackend() {
 
   return response.json();
 }
-
+ 
 // ==========================================
 // SUBMIT REPORT
 // ==========================================

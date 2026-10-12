@@ -15,7 +15,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getMyReports } from "../../services/api";
+import { API_URL, getMyReports } from "../../services/api";
+
+// Safety fallback: if API_URL ever comes through as undefined,
+// the schedules request still goes to the backend.
+const BASE_URL = API_URL || "http://192.168.1.227:3000";
 
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -59,6 +63,17 @@ type Report = {
   created_at: string;
 };
 
+type CollectionSchedule = {
+  id: number;
+  collection_date: string;
+  collection_time: string;
+  area: string;
+  waste_type: string;
+  assigned_personnel_name?: string | null;
+  status: string;
+  notes?: string | null;
+};
+
 type AppNotification = {
   id: string;
   title: string;
@@ -76,60 +91,32 @@ const QUICK_ACTIONS: {
   onPress?: () => void;
 }[] = [
   {
-    label: "Report issue",
+    label: "Report Issue",
     icon: "camera-outline",
     bg: C.greenSoft,
     fg: C.green,
     onPress: () => router.push("/report"),
   },
   {
-    label: "Truck Schedule",
+    label: "Collection Schedule",
     icon: "calendar-outline",
     bg: C.blueSoft,
     fg: C.blue,
-    onPress: () => router.push("/truckschedule"),
+    onPress: () => router.push("/collection-schedule"),
   },
   {
-    label: "Monitor",
+    label: "My Reports",
     icon: "document-text-outline",
     bg: C.amberSoft,
     fg: C.amber,
-    onPress: () => router.push("/monitoring"),
+    onPress: () => router.push("/my-reports"),
   },
   {
-    label: "Sorting guide",
+    label: "Profile Settings",
     icon: "leaf-outline",
     bg: C.greenSoft,
     fg: C.green,
-  },
-];
-
-const UPCOMING: {
-  type: string;
-  note: string;
-  day: string;
-  date: string;
-  icon: IconName;
-  bg: string;
-  fg: string;
-}[] = [
-  {
-    type: "General waste",
-    note: "By 7:00 AM · Black bin",
-    day: "Fri",
-    date: "24",
-    icon: "trash-outline",
-    bg: C.blueSoft,
-    fg: C.blue,
-  },
-  {
-    type: "Recyclables",
-    note: "Paper, glass and metals",
-    day: "Tue",
-    date: "28",
-    icon: "sync-outline",
-    bg: C.greenSoft,
-    fg: C.green,
+    onPress: () => router.push("/profile-settings"),
   },
 ];
 
@@ -139,16 +126,12 @@ const STATS = [
   { value: "24", label: "Recycled" },
 ];
 
-function formatReportDate(dateValue: string) {
-  if (!dateValue) {
-    return "Date unavailable";
-  }
+function formatReportDate(dateValue?: string) {
+  if (!dateValue) return "Date unavailable";
 
   const date = new Date(dateValue);
 
-  if (Number.isNaN(date.getTime())) {
-    return dateValue;
-  }
+  if (Number.isNaN(date.getTime())) return dateValue;
 
   return date.toLocaleDateString("en-US", {
     month: "short",
@@ -157,18 +140,40 @@ function formatReportDate(dateValue: string) {
   });
 }
 
+function formatScheduleDate(dateValue?: string) {
+  if (!dateValue) {
+    return { day: "--", date: "--", fullDate: "Date unavailable" };
+  }
+
+  // Handle MySQL DATE values without UTC timezone shifting.
+  const parts = dateValue.slice(0, 10).split("-").map(Number);
+
+  if (parts.length !== 3 || parts.some((part) => !part)) {
+    return { day: "--", date: "--", fullDate: dateValue };
+  }
+
+  const date = new Date(parts[0], parts[1] - 1, parts[2]);
+
+  return {
+    day: date.toLocaleDateString("en-US", { weekday: "short" }),
+    date: String(date.getDate()),
+    fullDate: date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }),
+  };
+}
+
 function getStatusColor(status: string) {
-  const value = status.toLowerCase();
+  const value = (status || "").toLowerCase();
 
   if (
     value.includes("resolved") ||
     value.includes("completed") ||
     value.includes("complete")
   ) {
-    return {
-      bg: C.greenSoft,
-      text: C.green,
-    };
+    return { bg: C.greenSoft, text: C.green };
   }
 
   if (
@@ -176,10 +181,7 @@ function getStatusColor(status: string) {
     value.includes("progress") ||
     value.includes("en route")
   ) {
-    return {
-      bg: C.blueSoft,
-      text: C.blue,
-    };
+    return { bg: C.blueSoft, text: C.blue };
   }
 
   if (
@@ -187,20 +189,14 @@ function getStatusColor(status: string) {
     value.includes("cancelled") ||
     value.includes("failed")
   ) {
-    return {
-      bg: C.redSoft,
-      text: C.red,
-    };
+    return { bg: C.redSoft, text: C.red };
   }
 
-  return {
-    bg: C.amberSoft,
-    text: C.amber,
-  };
+  return { bg: C.amberSoft, text: C.amber };
 }
 
 function getReportStep(status: string) {
-  const value = status.toLowerCase();
+  const value = (status || "").toLowerCase();
 
   if (
     value.includes("resolved") ||
@@ -225,26 +221,126 @@ function getReportStep(status: string) {
   return 0;
 }
 
+function getWasteStyle(wasteType: string) {
+  const value = (wasteType || "").toLowerCase();
+
+  if (value.includes("recycl")) {
+    return {
+      icon: "sync-outline" as IconName,
+      bg: C.greenSoft,
+      fg: C.green,
+    };
+  }
+
+  if (value.includes("organic")) {
+    return {
+      icon: "leaf-outline" as IconName,
+      bg: C.greenSoft,
+      fg: C.green,
+    };
+  }
+
+  return {
+    icon: "trash-outline" as IconName,
+    bg: C.blueSoft,
+    fg: C.blue,
+  };
+}
+
 export default function HomeScreen() {
   const [user, setUser] = useState<User | null>(null);
   const [latestReport, setLatestReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // NOTIFICATIONS
+  const [schedules, setSchedules] = useState<CollectionSchedule[]>([]);
+  const [scheduleError, setScheduleError] = useState("");
+
   const [notificationsVisible, setNotificationsVisible] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
-  const [notifications, setNotifications] = useState<AppNotification[]>([
-    {
-      id: "login",
-      title: "Login Successful",
-      message: "Welcome back to Garbage Collection Monitoring System.",
-      time: "Just now",
-      icon: "log-in-outline",
-      read: false,
-    },
-  ]);
+  // IMPORTANT: Hooks must stay directly inside HomeScreen.
+  // Do not move this function inside loadDashboard.
+  const loadSchedules = useCallback(async () => {
+    try {
+      setScheduleError("");
 
+      console.log("SCHEDULES URL:", `${BASE_URL}/schedules`);
+
+      const response = await fetch(`${BASE_URL}/schedules`);
+
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+      }
+
+      const data: unknown = await response.json();
+
+      let scheduleList: CollectionSchedule[] = [];
+
+      if (Array.isArray(data)) {
+        scheduleList = data as CollectionSchedule[];
+      } else if (
+        data !== null &&
+        typeof data === "object" &&
+        "schedules" in data &&
+        Array.isArray(data.schedules)
+      ) {
+        scheduleList = data.schedules as CollectionSchedule[];
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const upcomingSchedules = scheduleList
+        .filter((item) => {
+          const status = (item.status || "Scheduled").toLowerCase();
+
+          if (
+            status === "cancelled" ||
+            status === "canceled" ||
+            status === "completed"
+          ) {
+            return false;
+          }
+
+          if (!item.collection_date) return false;
+
+          const parts = item.collection_date
+            .slice(0, 10)
+            .split("-")
+            .map(Number);
+
+          if (
+            parts.length !== 3 ||
+            parts.some((part) => !part)
+          ) {
+            return false;
+          }
+
+          const scheduleDate = new Date(
+            parts[0],
+            parts[1] - 1,
+            parts[2],
+          );
+
+          scheduleDate.setHours(0, 0, 0, 0);
+
+          return scheduleDate >= today;
+        })
+        .sort((a, b) =>
+          a.collection_date.localeCompare(b.collection_date),
+        );
+
+      setSchedules(upcomingSchedules);
+    } catch (error) {
+      console.error("LOAD SCHEDULES ERROR:", error);
+      setScheduleError(
+        "Unable to load collection schedules. Please try again.",
+      );
+    }
+  }, []);
+
+  // Load the resident, notifications, and latest report.
   const loadDashboard = useCallback(async () => {
     try {
       const savedUser = await AsyncStorage.getItem("loggedInUser");
@@ -272,13 +368,100 @@ export default function HomeScreen() {
 
       setUser(loggedInUser);
 
+      // Load schedules without breaking the rest of the dashboard
+      // if the schedules endpoint is temporarily unavailable.
+      await loadSchedules();
+
+      const notificationKey = `gcms_notifications_${loggedInUser.id}`;
+      const savedNotifications = await AsyncStorage.getItem(
+        notificationKey,
+      );
+
+      let nextNotifications: AppNotification[] = [];
+
+      if (savedNotifications !== null) {
+        try {
+          const parsed: unknown = JSON.parse(savedNotifications);
+
+          if (Array.isArray(parsed)) {
+            nextNotifications = parsed.filter(
+              (item): item is AppNotification =>
+                item !== null &&
+                typeof item === "object" &&
+                typeof item.id === "string" &&
+                typeof item.title === "string" &&
+                typeof item.message === "string" &&
+                typeof item.time === "string" &&
+                typeof item.icon === "string" &&
+                typeof item.read === "boolean",
+            );
+          }
+        } catch {
+          nextNotifications = [];
+        }
+      } else {
+        nextNotifications = [
+          {
+            id: `welcome-${loggedInUser.id}`,
+            title: "Welcome to GCMS",
+            message:
+              "You'll find updates about your collection reports and schedules here.",
+            time: "Just now",
+            icon: "notifications-outline",
+            read: false,
+          },
+        ];
+      }
+
+      // Load the resident's reports.
       const reports = await getMyReports(Number(loggedInUser.id));
 
       if (reports && reports.length > 0) {
-        setLatestReport(reports[0]);
+        const latest = reports[0] as Report;
+
+        setLatestReport(latest);
+
+        const currentStatus = latest.status || "Reported";
+        const statusKey =
+          `gcms_report_status_${loggedInUser.id}_${latest.id}`;
+
+        const previousStatus = await AsyncStorage.getItem(statusKey);
+
+        if (previousStatus && previousStatus !== currentStatus) {
+          const notificationId =
+            `report-${latest.id}-${previousStatus}-${currentStatus}`;
+
+          const alreadyExists = nextNotifications.some(
+            (item) => item.id === notificationId,
+          );
+
+          if (!alreadyExists) {
+            nextNotifications = [
+              {
+                id: notificationId,
+                title: `Report #${latest.id} Updated`,
+                message:
+                  `Your report status changed from ${previousStatus} to ${currentStatus}.`,
+                time: "Just now",
+                icon: "document-text-outline",
+                read: false,
+              },
+              ...nextNotifications,
+            ];
+          }
+        }
+
+        await AsyncStorage.setItem(statusKey, currentStatus);
       } else {
         setLatestReport(null);
       }
+
+      setNotifications(nextNotifications);
+
+      await AsyncStorage.setItem(
+        notificationKey,
+        JSON.stringify(nextNotifications),
+      );
     } catch (error) {
       console.error("DASHBOARD ERROR:", error);
       setLatestReport(null);
@@ -286,59 +469,60 @@ export default function HomeScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [loadSchedules]);
 
   useEffect(() => {
-    loadDashboard();
+    void loadDashboard();
   }, [loadDashboard]);
 
-  const handleRefresh = () => {
+  const handleRefresh = useCallback(() => {
     setRefreshing(true);
-    loadDashboard();
-  };
+    void loadDashboard();
+  }, [loadDashboard]);
 
   const unreadCount = notifications.filter(
     (notification) => !notification.read,
   ).length;
 
-  const markNotificationAsRead = (id: string) => {
-    setNotifications((current) =>
-      current.map((notification) =>
-        notification.id === id
-          ? {
-              ...notification,
-              read: true,
-            }
-          : notification,
-      ),
+  const markNotificationAsRead = async (id: string) => {
+    const updatedNotifications = notifications.map((notification) =>
+      notification.id === id
+        ? { ...notification, read: true }
+        : notification,
     );
+
+    setNotifications(updatedNotifications);
+
+    if (user?.id) {
+      try {
+        await AsyncStorage.setItem(
+          `gcms_notifications_${user.id}`,
+          JSON.stringify(updatedNotifications),
+        );
+      } catch (error) {
+        console.error("FAILED TO SAVE NOTIFICATION:", error);
+      }
+    }
   };
 
-  const markAllNotificationsAsRead = () => {
-    setNotifications((current) =>
-      current.map((notification) => ({
-        ...notification,
-        read: true,
-      })),
-    );
-  };
+  const markAllNotificationsAsRead = async () => {
+    const updatedNotifications = notifications.map((notification) => ({
+      ...notification,
+      read: true,
+    }));
 
-  const addNotification = (
-    title: string,
-    message: string,
-    icon: IconName = "notifications-outline",
-  ) => {
-    setNotifications((current) => [
-      {
-        id: `${Date.now()}`,
-        title,
-        message,
-        time: "Just now",
-        icon,
-        read: false,
-      },
-      ...current,
-    ]);
+    setNotifications(updatedNotifications);
+
+    if (user?.id) {
+      try {
+        await AsyncStorage.setItem(
+          `gcms_notifications_${user.id}`,
+          JSON.stringify(updatedNotifications),
+        );
+      } catch (error) {
+        console.error("FAILED TO SAVE NOTIFICATIONS:", error);
+      }
+    }
   };
 
   const handleLogout = async () => {
@@ -346,7 +530,9 @@ export default function HomeScreen() {
     router.replace("/login");
   };
 
-  const displayName = user?.fullName ? user.fullName.split(" ")[0] : "Resident";
+  const displayName = user?.fullName
+    ? user.fullName.split(" ")[0]
+    : "Resident";
 
   const reportStatus = latestReport?.status || "Reported";
   const statusStyle = getStatusColor(reportStatus);
@@ -356,7 +542,6 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={s.loadingContainer}>
         <ActivityIndicator size="large" color={C.green} />
-
         <Text style={s.loadingText}>Loading your dashboard...</Text>
       </SafeAreaView>
     );
@@ -385,20 +570,25 @@ export default function HomeScreen() {
 
           <View style={s.headerText}>
             <Text style={s.greeting}>Hello, {displayName}</Text>
-
             <Text style={s.zone}>
-              {user?.role === "user" ? "Resident" : "Residential user"}
+              {user?.role?.toLowerCase() === "user" ||
+              user?.role?.toLowerCase() === "resident"
+                ? "Resident"
+                : user?.role || "Resident"}
             </Text>
           </View>
 
-          {/* NOTIFICATION BUTTON */}
           <TouchableOpacity
             style={s.bell}
             accessibilityLabel="Notifications"
             onPress={() => setNotificationsVisible(true)}
             activeOpacity={0.7}
           >
-            <Ionicons name="notifications-outline" size={22} color={C.ink} />
+            <Ionicons
+              name="notifications-outline"
+              size={22}
+              color={C.ink}
+            />
 
             {unreadCount > 0 && (
               <View style={s.bellDot}>
@@ -427,11 +617,9 @@ export default function HomeScreen() {
               style={s.notificationPanel}
               onPress={(event) => event.stopPropagation()}
             >
-              {/* NOTIFICATION HEADER */}
               <View style={s.notificationHeader}>
                 <View>
                   <Text style={s.notificationTitle}>Notifications</Text>
-
                   <Text style={s.notificationSubtitle}>
                     {unreadCount > 0
                       ? `${unreadCount} unread notification${
@@ -456,7 +644,6 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* NOTIFICATION LIST */}
               <ScrollView
                 style={s.notificationList}
                 showsVerticalScrollIndicator={false}
@@ -470,9 +657,9 @@ export default function HomeScreen() {
                         color={C.muted}
                       />
                     </View>
-
-                    <Text style={s.noNotificationTitle}>No notifications</Text>
-
+                    <Text style={s.noNotificationTitle}>
+                      No notifications
+                    </Text>
                     <Text style={s.noNotificationText}>
                       You don't have any notifications yet.
                     </Text>
@@ -486,7 +673,9 @@ export default function HomeScreen() {
                         !notification.read && s.unreadNotification,
                       ]}
                       activeOpacity={0.7}
-                      onPress={() => markNotificationAsRead(notification.id)}
+                      onPress={() =>
+                        markNotificationAsRead(notification.id)
+                      }
                     >
                       <View style={s.notificationIcon}>
                         <Ionicons
@@ -517,7 +706,6 @@ export default function HomeScreen() {
                         <Text style={s.notificationMessage}>
                           {notification.message}
                         </Text>
-
                         <Text style={s.notificationTime}>
                           {notification.time}
                         </Text>
@@ -535,24 +723,27 @@ export default function HomeScreen() {
           <View style={s.heroTop}>
             <View style={s.livePill}>
               <View style={s.liveDot} />
-
               <Text style={s.livePillText}>Collection service</Text>
             </View>
-
             <Text style={s.heroRoute}>Resident</Text>
           </View>
 
           <Text style={s.heroLabel}>Next pickup</Text>
-
-          <Text style={s.heroTitle}>Organic waste</Text>
-
+          <Text style={s.heroTitle}>
+            {schedules.length > 0
+              ? schedules[0].waste_type || "Scheduled collection"
+              : "No upcoming pickup"}
+          </Text>
           <Text style={s.heroSub}>
-            Today by 2:00 PM · Put out your organic bin
+            {schedules.length > 0
+              ? `${formatScheduleDate(schedules[0].collection_date).fullDate} · ${
+                  schedules[0].collection_time || "Time not specified"
+                }`
+              : "There are no upcoming collection schedules."}
           </Text>
 
           <View style={s.heroFooter}>
             <Ionicons name="time-outline" size={16} color="#BFEBD9" />
-
             <Text style={s.heroFooterText}>
               Keep your waste ready for collection
             </Text>
@@ -561,89 +752,143 @@ export default function HomeScreen() {
 
         {/* QUICK ACTIONS */}
         <View style={s.actionsRow}>
-          {QUICK_ACTIONS.map((a) => (
+          {QUICK_ACTIONS.map((action) => (
             <TouchableOpacity
-              key={a.label}
+              key={action.label}
               style={s.action}
-              onPress={a.onPress}
+              onPress={action.onPress}
               activeOpacity={0.7}
             >
               <View
                 style={[
                   s.actionIcon,
-                  {
-                    backgroundColor: a.bg,
-                  },
+                  { backgroundColor: action.bg },
                 ]}
               >
-                <Ionicons name={a.icon} size={22} color={a.fg} />
+                <Ionicons
+                  name={action.icon}
+                  size={22}
+                  color={action.fg}
+                />
               </View>
-
               <Text style={s.actionLabel} numberOfLines={2}>
-                {a.label}
+                {action.label}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        {/* UPCOMING PICKUPS */}
+        {/* UPCOMING PICKUPS FROM THE DATABASE */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionTitle}>Upcoming pickups</Text>
-
-          <TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push("/collection-schedule")}>
             <Text style={s.link}>Full calendar</Text>
           </TouchableOpacity>
         </View>
 
-        <View style={s.card}>
-          {UPCOMING.map((u, i) => (
-            <View key={u.type} style={[s.row, i > 0 && s.rowBorder]}>
-              <View
-                style={[
-                  s.rowIcon,
-                  {
-                    backgroundColor: u.bg,
-                  },
-                ]}
+        {scheduleError ? (
+          <View style={s.errorCard}>
+            <Ionicons
+              name="alert-circle-outline"
+              size={22}
+              color={C.red}
+            />
+            <View style={s.errorContent}>
+              <Text style={s.errorTitle}>Schedule unavailable</Text>
+              <Text style={s.errorText}>{scheduleError}</Text>
+              <TouchableOpacity
+                onPress={() => void loadSchedules()}
+                style={s.retryButton}
               >
-                <Ionicons name={u.icon} size={22} color={u.fg} />
-              </View>
-
-              <View style={s.rowText}>
-                <Text style={s.rowTitle}>{u.type}</Text>
-
-                <Text style={s.rowNote}>{u.note}</Text>
-              </View>
-
-              <View style={s.dateBox}>
-                <Text style={s.dateDay}>{u.day}</Text>
-
-                <Text style={s.dateNum}>{u.date}</Text>
-              </View>
+                <Text style={s.retryText}>Try again</Text>
+              </TouchableOpacity>
             </View>
-          ))}
-        </View>
+          </View>
+        ) : schedules.length > 0 ? (
+          <View style={s.card}>
+            {schedules.slice(0, 3).map((schedule, index) => {
+              const wasteStyle = getWasteStyle(schedule.waste_type);
+              const dateInfo = formatScheduleDate(
+                schedule.collection_date,
+              );
+
+              return (
+                <View
+                  key={schedule.id}
+                  style={[
+                    s.row,
+                    index > 0 && s.rowBorder,
+                  ]}
+                >
+                  <View
+                    style={[
+                      s.rowIcon,
+                      { backgroundColor: wasteStyle.bg },
+                    ]}
+                  >
+                    <Ionicons
+                      name={wasteStyle.icon}
+                      size={22}
+                      color={wasteStyle.fg}
+                    />
+                  </View>
+
+                  <View style={s.rowText}>
+                    <Text style={s.rowTitle} numberOfLines={1}>
+                      {schedule.waste_type || "Waste collection"}
+                    </Text>
+                    <Text style={s.rowNote} numberOfLines={2}>
+                      {schedule.collection_time || "Time not specified"}
+                      {" · "}
+                      {schedule.area || "Area not specified"}
+                    </Text>
+                    {schedule.assigned_personnel_name ? (
+                      <Text style={s.schedulePersonnel}>
+                        Assigned: {schedule.assigned_personnel_name}
+                      </Text>
+                    ) : null}
+                    <Text style={s.scheduleStatus}>
+                      Status: {schedule.status || "Scheduled"}
+                    </Text>
+                  </View>
+
+                  <View style={s.dateBox}>
+                    <Text style={s.dateDay}>{dateInfo.day}</Text>
+                    <Text style={s.dateNum}>{dateInfo.date}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={s.emptyReportCard}>
+            <View style={s.emptyIcon}>
+              <Ionicons
+                name="calendar-outline"
+                size={28}
+                color={C.green}
+              />
+            </View>
+            <Text style={s.emptyTitle}>No upcoming pickups</Text>
+            <Text style={s.emptyText}>
+              There are no upcoming collection schedules available right now.
+            </Text>
+          </View>
+        )}
 
         {/* MY REPORT STATUS */}
         <View style={s.sectionHeader}>
           <Text style={s.sectionTitle}>Your latest report</Text>
-
-          <TouchableOpacity onPress={() => router.push("/my-reports")}>
-            <Text style={s.link}>View all</Text>
-          </TouchableOpacity>
         </View>
 
         {latestReport ? (
           <View style={s.card}>
-            {/* REPORT TOP */}
             <View style={s.reportTop}>
               <View style={s.rowText}>
                 <Text style={s.rowNote}>REPORT #{latestReport.id}</Text>
-
                 <Text style={s.rowTitle} numberOfLines={2}>
                   {latestReport.issue}
                 </Text>
-
                 <Text style={s.reportDate}>
                   {formatReportDate(latestReport.collection_date)}
                 </Text>
@@ -652,17 +897,13 @@ export default function HomeScreen() {
               <View
                 style={[
                   s.etaPill,
-                  {
-                    backgroundColor: statusStyle.bg,
-                  },
+                  { backgroundColor: statusStyle.bg },
                 ]}
               >
                 <Text
                   style={[
                     s.etaText,
-                    {
-                      color: statusStyle.text,
-                    },
+                    { color: statusStyle.text },
                   ]}
                 >
                   {reportStatus}
@@ -670,31 +911,35 @@ export default function HomeScreen() {
               </View>
             </View>
 
-            {/* REPORT DETAILS */}
             <View style={s.reportInfo}>
               <View style={s.reportInfoItem}>
-                <Ionicons name="trash-outline" size={17} color={C.green} />
-
+                <Ionicons
+                  name="trash-outline"
+                  size={17}
+                  color={C.green}
+                />
                 <Text style={s.reportInfoText} numberOfLines={1}>
                   {latestReport.waste_type}
                 </Text>
               </View>
 
               <View style={s.reportInfoItem}>
-                <Ionicons name="location-outline" size={17} color={C.green} />
-
+                <Ionicons
+                  name="location-outline"
+                  size={17}
+                  color={C.green}
+                />
                 <Text style={s.reportInfoText} numberOfLines={1}>
                   {latestReport.area}
                 </Text>
               </View>
             </View>
 
-            {/* REPORT TRACKER */}
             <View style={s.tracker}>
               {["Reported", "Assigned", "En route", "Resolved"].map(
-                (label, i, steps) => {
-                  const done = i < currentStep;
-                  const active = i === currentStep;
+                (label, index, steps) => {
+                  const done = index < currentStep;
+                  const active = index === currentStep;
 
                   return (
                     <View key={label} style={s.step}>
@@ -702,8 +947,8 @@ export default function HomeScreen() {
                         <View
                           style={[
                             s.stepLine,
-                            i === 0 && s.stepLineHidden,
-                            i <= currentStep && s.stepLineOn,
+                            index === 0 && s.stepLineHidden,
+                            index <= currentStep && s.stepLineOn,
                           ]}
                         />
 
@@ -715,23 +960,30 @@ export default function HomeScreen() {
                           ]}
                         >
                           {done && (
-                            <Ionicons name="checkmark" size={14} color="#fff" />
+                            <Ionicons
+                              name="checkmark"
+                              size={14}
+                              color="#FFFFFF"
+                            />
                           )}
-
                           {active && <View style={s.stepActiveCore} />}
                         </View>
 
                         <View
                           style={[
                             s.stepLine,
-                            i === steps.length - 1 && s.stepLineHidden,
-                            i < currentStep && s.stepLineOn,
+                            index === steps.length - 1 &&
+                              s.stepLineHidden,
+                            index < currentStep && s.stepLineOn,
                           ]}
                         />
                       </View>
 
                       <Text
-                        style={[s.stepText, (done || active) && s.stepTextOn]}
+                        style={[
+                          s.stepText,
+                          (done || active) && s.stepTextOn,
+                        ]}
                         numberOfLines={1}
                       >
                         {label}
@@ -742,27 +994,18 @@ export default function HomeScreen() {
               )}
             </View>
 
-            {/* DESCRIPTION */}
             {latestReport.description ? (
               <View style={s.descriptionBox}>
-                <Ionicons name="chatbubble-outline" size={17} color={C.muted} />
-
+                <Ionicons
+                  name="chatbubble-outline"
+                  size={17}
+                  color={C.muted}
+                />
                 <Text style={s.descriptionText}>
                   {latestReport.description}
                 </Text>
               </View>
             ) : null}
-
-            {/* VIEW REPORT */}
-            <TouchableOpacity
-              style={s.viewReportButton}
-              activeOpacity={0.7}
-              onPress={() => router.push("/my-reports")}
-            >
-              <Text style={s.viewReportText}>View report details</Text>
-
-              <Ionicons name="arrow-forward" size={17} color={C.green} />
-            </TouchableOpacity>
           </View>
         ) : (
           <View style={s.emptyReportCard}>
@@ -773,9 +1016,7 @@ export default function HomeScreen() {
                 color={C.green}
               />
             </View>
-
             <Text style={s.emptyTitle}>No reports yet</Text>
-
             <Text style={s.emptyText}>
               You have not submitted any collection reports yet.
             </Text>
@@ -785,29 +1026,17 @@ export default function HomeScreen() {
               activeOpacity={0.8}
               onPress={() => router.push("/report")}
             >
-              <Ionicons name="camera-outline" size={18} color="#FFFFFF" />
-
+              <Ionicons
+                name="camera-outline"
+                size={18}
+                color="#FFFFFF"
+              />
               <Text style={s.reportButtonText}>Report an issue</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* ZONE STATS */}
-        <View style={s.sectionHeader}>
-          <Text style={s.sectionTitle}>Zone 1 this month</Text>
 
-          <Text style={s.muted}>September 2026</Text>
-        </View>
-
-        <View style={[s.card, s.statsCard]}>
-          {STATS.map((st, i) => (
-            <View key={st.label} style={[s.stat, i > 0 && s.statBorder]}>
-              <Text style={s.statValue}>{st.value}</Text>
-
-              <Text style={s.statLabel}>{st.label}</Text>
-            </View>
-          ))}
-        </View>
 
         {/* LOGOUT */}
         <TouchableOpacity
@@ -816,7 +1045,6 @@ export default function HomeScreen() {
           onPress={handleLogout}
         >
           <Ionicons name="log-out-outline" size={18} color={C.red} />
-
           <Text style={s.logoutText}>Logout</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -831,53 +1059,43 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   loadingText: {
     marginTop: 12,
     fontSize: 14,
     color: C.muted,
   },
-
   container: {
     flex: 1,
     backgroundColor: C.bg,
   },
-
   content: {
     paddingHorizontal: 18,
     paddingBottom: 32,
   },
-
-  /* HEADER */
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingTop: 10,
     paddingBottom: 16,
   },
-
   logo: {
     width: 44,
     height: 44,
     marginRight: 12,
   },
-
   headerText: {
     flex: 1,
   },
-
   greeting: {
     fontSize: 22,
     fontWeight: "800",
     color: C.ink,
   },
-
   zone: {
     fontSize: 13,
     color: C.muted,
     marginTop: 2,
   },
-
   bell: {
     width: 44,
     height: 44,
@@ -888,7 +1106,6 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   bellDot: {
     position: "absolute",
     top: 4,
@@ -903,14 +1120,11 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   bellDotText: {
     color: "#FFFFFF",
     fontSize: 8,
     fontWeight: "800",
   },
-
-  /* NOTIFICATIONS */
   notificationOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.18)",
@@ -919,7 +1133,6 @@ const s = StyleSheet.create({
     paddingTop: 70,
     paddingRight: 18,
   },
-
   notificationPanel: {
     width: 350,
     maxWidth: "92%",
@@ -929,16 +1142,12 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.line,
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.15,
     shadowRadius: 20,
     elevation: 10,
     overflow: "hidden",
   },
-
   notificationHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -948,33 +1157,27 @@ const s = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: C.line,
   },
-
   notificationTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: C.ink,
   },
-
   notificationSubtitle: {
     fontSize: 12,
     color: C.muted,
     marginTop: 3,
   },
-
   markAllText: {
     fontSize: 11,
     fontWeight: "700",
     color: C.green,
   },
-
   markAllDisabled: {
     color: C.muted,
   },
-
   notificationList: {
     maxHeight: 350,
   },
-
   notificationItem: {
     flexDirection: "row",
     paddingHorizontal: 15,
@@ -982,11 +1185,9 @@ const s = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: C.line,
   },
-
   unreadNotification: {
     backgroundColor: "#F0FAF6",
   },
-
   notificationIcon: {
     width: 42,
     height: 42,
@@ -995,41 +1196,34 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   notificationContent: {
     flex: 1,
     marginLeft: 11,
   },
-
   notificationTitleRow: {
     flexDirection: "row",
     alignItems: "center",
   },
-
   notificationItemTitle: {
     flex: 1,
     fontSize: 13,
     fontWeight: "600",
     color: C.ink,
   },
-
   notificationItemTitleUnread: {
     fontWeight: "800",
   },
-
   notificationMessage: {
     fontSize: 12,
     lineHeight: 17,
     color: C.muted,
     marginTop: 3,
   },
-
   notificationTime: {
     fontSize: 10,
     color: "#94A3B8",
     marginTop: 5,
   },
-
   unreadIndicator: {
     width: 8,
     height: 8,
@@ -1037,13 +1231,11 @@ const s = StyleSheet.create({
     backgroundColor: "#E5484D",
     marginLeft: 8,
   },
-
   noNotifications: {
     alignItems: "center",
     paddingVertical: 35,
     paddingHorizontal: 20,
   },
-
   noNotificationIcon: {
     width: 58,
     height: 58,
@@ -1052,34 +1244,28 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   noNotificationTitle: {
     fontSize: 15,
     fontWeight: "800",
     color: C.ink,
     marginTop: 12,
   },
-
   noNotificationText: {
     fontSize: 12,
     color: C.muted,
     textAlign: "center",
     marginTop: 5,
   },
-
-  /* HERO */
   hero: {
     backgroundColor: C.greenDark,
     borderRadius: 20,
     padding: 20,
   },
-
   heroTop: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-
   livePill: {
     flexDirection: "row",
     alignItems: "center",
@@ -1088,7 +1274,6 @@ const s = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
-
   liveDot: {
     width: 7,
     height: 7,
@@ -1096,38 +1281,32 @@ const s = StyleSheet.create({
     backgroundColor: "#4ADE9B",
     marginRight: 6,
   },
-
   livePillText: {
     color: "#E3F6EE",
     fontSize: 12,
     fontWeight: "600",
   },
-
   heroRoute: {
     color: "#9FD8C0",
     fontSize: 12,
   },
-
   heroLabel: {
     color: "#9FD8C0",
     fontSize: 13,
     marginTop: 18,
   },
-
   heroTitle: {
     color: "#FFFFFF",
     fontSize: 30,
     fontWeight: "800",
     marginTop: 2,
   },
-
   heroSub: {
     color: "#CDEFE0",
     fontSize: 14,
     marginTop: 6,
     lineHeight: 20,
   },
-
   heroFooter: {
     flexDirection: "row",
     alignItems: "center",
@@ -1136,25 +1315,21 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.15)",
   },
-
   heroFooterText: {
     color: "#E3F6EE",
     fontSize: 13,
     marginLeft: 6,
+    flex: 1,
   },
-
-  /* QUICK ACTIONS */
   actionsRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginTop: 18,
   },
-
   action: {
     width: "23%",
     alignItems: "center",
   },
-
   actionIcon: {
     width: 56,
     height: 56,
@@ -1162,7 +1337,6 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   actionLabel: {
     fontSize: 12,
     color: C.ink,
@@ -1170,8 +1344,6 @@ const s = StyleSheet.create({
     textAlign: "center",
     marginTop: 7,
   },
-
-  /* SECTIONS */
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1179,25 +1351,20 @@ const s = StyleSheet.create({
     marginTop: 26,
     marginBottom: 10,
   },
-
   sectionTitle: {
     fontSize: 18,
     fontWeight: "800",
     color: C.ink,
   },
-
   link: {
     fontSize: 13,
     fontWeight: "700",
     color: C.green,
   },
-
   muted: {
     fontSize: 12,
     color: C.muted,
   },
-
-  /* CARD */
   card: {
     backgroundColor: C.card,
     borderRadius: 18,
@@ -1205,21 +1372,17 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.line,
   },
-
-  /* LIST ROWS */
   row: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 4,
   },
-
   rowBorder: {
     borderTopWidth: 1,
     borderTopColor: C.line,
     marginTop: 12,
     paddingTop: 16,
   },
-
   rowIcon: {
     width: 46,
     height: 46,
@@ -1227,67 +1390,99 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   rowText: {
     flex: 1,
     marginLeft: 12,
   },
-
   rowTitle: {
     fontSize: 15,
     fontWeight: "700",
     color: C.ink,
   },
-
   rowNote: {
     fontSize: 12,
     color: C.muted,
     marginTop: 2,
   },
-
+  schedulePersonnel: {
+    fontSize: 11,
+    color: C.green,
+    marginTop: 4,
+  },
+  scheduleStatus: {
+    fontSize: 11,
+    color: C.muted,
+    marginTop: 3,
+  },
   dateBox: {
     alignItems: "center",
     backgroundColor: C.bg,
     borderRadius: 12,
     paddingVertical: 6,
     paddingHorizontal: 12,
+    marginLeft: 8,
   },
-
   dateDay: {
     fontSize: 11,
     color: C.muted,
   },
-
   dateNum: {
     fontSize: 18,
     fontWeight: "800",
     color: C.ink,
   },
-
-  /* REPORT */
+  errorCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: C.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: C.line,
+    padding: 16,
+  },
+  errorContent: {
+    flex: 1,
+    marginLeft: 10,
+  },
+  errorTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: C.ink,
+  },
+  errorText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: C.muted,
+    marginTop: 4,
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+  },
+  retryText: {
+    color: C.green,
+    fontSize: 13,
+    fontWeight: "800",
+  },
   reportTop: {
     flexDirection: "row",
     alignItems: "center",
   },
-
   reportDate: {
     fontSize: 12,
     color: C.muted,
     marginTop: 4,
   },
-
   etaPill: {
     borderRadius: 14,
     paddingHorizontal: 10,
     paddingVertical: 6,
     marginLeft: 8,
   },
-
   etaText: {
     fontSize: 12,
     fontWeight: "700",
   },
-
   reportInfo: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1296,52 +1491,42 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: C.line,
   },
-
   reportInfoItem: {
     flexDirection: "row",
     alignItems: "center",
     maxWidth: "50%",
     marginRight: 18,
   },
-
   reportInfoText: {
     fontSize: 12,
     color: C.muted,
     marginLeft: 6,
     maxWidth: 130,
   },
-
-  /* REPORT TRACKER */
   tracker: {
     flexDirection: "row",
     marginTop: 20,
   },
-
   step: {
     flex: 1,
     alignItems: "center",
   },
-
   stepLineRow: {
     flexDirection: "row",
     alignItems: "center",
     width: "100%",
   },
-
   stepLine: {
     flex: 1,
     height: 3,
     backgroundColor: C.line,
   },
-
   stepLineOn: {
     backgroundColor: C.green,
   },
-
   stepLineHidden: {
     backgroundColor: "transparent",
   },
-
   stepDot: {
     width: 26,
     height: 26,
@@ -1352,34 +1537,28 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   stepDone: {
     backgroundColor: C.green,
     borderColor: C.green,
   },
-
   stepActive: {
     borderColor: C.green,
   },
-
   stepActiveCore: {
     width: 10,
     height: 10,
     borderRadius: 5,
     backgroundColor: C.green,
   },
-
   stepText: {
     fontSize: 11,
     color: C.muted,
     marginTop: 6,
   },
-
   stepTextOn: {
     color: C.ink,
     fontWeight: "700",
   },
-
   descriptionBox: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1388,7 +1567,6 @@ const s = StyleSheet.create({
     padding: 12,
     marginTop: 16,
   },
-
   descriptionText: {
     flex: 1,
     fontSize: 12,
@@ -1396,7 +1574,6 @@ const s = StyleSheet.create({
     color: C.muted,
     marginLeft: 8,
   },
-
   viewReportButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -1406,15 +1583,12 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: C.line,
   },
-
   viewReportText: {
     color: C.green,
     fontSize: 13,
     fontWeight: "700",
     marginRight: 6,
   },
-
-  /* EMPTY REPORT */
   emptyReportCard: {
     backgroundColor: C.card,
     borderRadius: 18,
@@ -1423,7 +1597,6 @@ const s = StyleSheet.create({
     borderColor: C.line,
     alignItems: "center",
   },
-
   emptyIcon: {
     width: 62,
     height: 62,
@@ -1432,14 +1605,12 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   emptyTitle: {
     fontSize: 17,
     fontWeight: "800",
     color: C.ink,
     marginTop: 12,
   },
-
   emptyText: {
     fontSize: 13,
     color: C.muted,
@@ -1447,7 +1618,6 @@ const s = StyleSheet.create({
     lineHeight: 19,
     marginTop: 5,
   },
-
   reportButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -1458,44 +1628,35 @@ const s = StyleSheet.create({
     paddingVertical: 11,
     marginTop: 16,
   },
-
   reportButtonText: {
     color: "#FFFFFF",
     fontSize: 13,
     fontWeight: "700",
     marginLeft: 7,
   },
-
-  /* STATS */
   statsCard: {
     flexDirection: "row",
     paddingHorizontal: 0,
   },
-
   stat: {
     flex: 1,
     alignItems: "center",
   },
-
   statBorder: {
     borderLeftWidth: 1,
     borderLeftColor: C.line,
   },
-
   statValue: {
     fontSize: 24,
     fontWeight: "800",
     color: C.green,
   },
-
   statLabel: {
     fontSize: 12,
     color: C.muted,
     marginTop: 3,
     textAlign: "center",
   },
-
-  /* LOGOUT */
   logoutButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -1503,7 +1664,6 @@ const s = StyleSheet.create({
     marginTop: 28,
     paddingVertical: 12,
   },
-
   logoutText: {
     color: C.red,
     fontSize: 13,

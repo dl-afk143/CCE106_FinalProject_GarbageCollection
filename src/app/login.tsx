@@ -1,9 +1,11 @@
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Modal,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -16,22 +18,59 @@ import {
   sendTestPushNotification,
 } from "../services/notification";
 
-const API_URL = "http://192.168.1.28:3000";
+const API_URL = "http://192.168.1.227:3000";
+
+type UserRole = "Admin" | "Personnel" | "Resident";
+type DashboardRoute =
+  | "/admin"
+  | "/personnel-management"
+  | "/dashboard";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async () => {
-    // ==========================================
-    // CHECK EMPTY FIELDS
-    // ==========================================
+  // Error modal state
+  const [errorModalVisible, setErrorModalVisible] = useState(false);
+  const [errorTitle, setErrorTitle] = useState("Login Failed");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [errorType, setErrorType] = useState<
+    "connection" | "login"
+  >("login");
 
+  // Success modal state
+  const [successModalVisible, setSuccessModalVisible] =
+    useState(false);
+  const [successTitle, setSuccessTitle] =
+    useState("Login Successful");
+  const [successMessage, setSuccessMessage] = useState("");
+  const [successRoute, setSuccessRoute] =
+    useState<DashboardRoute>("/dashboard");
+
+  const showError = (title: string, message: string) => {
+    setErrorTitle(title);
+    setErrorMessage(message);
+    setErrorType("login");
+    setErrorModalVisible(true);
+  };
+
+  const showSuccess = (
+    title: string,
+    message: string,
+    destination: DashboardRoute
+  ) => {
+    setSuccessTitle(title);
+    setSuccessMessage(message);
+    setSuccessRoute(destination);
+    setSuccessModalVisible(true);
+  };
+
+  const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
-      Alert.alert(
+      showError(
         "Missing Information",
-        "Please enter your email and password.",
+        "Please enter your email address and password to continue."
       );
       return;
     }
@@ -39,10 +78,7 @@ export default function LoginScreen() {
     try {
       setLoading(true);
 
-      // ==========================================
       // LOGIN REQUEST
-      // ==========================================
-
       const response = await fetch(`${API_URL}/login`, {
         method: "POST",
         headers: {
@@ -50,14 +86,11 @@ export default function LoginScreen() {
         },
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
-          password: password,
+          password,
         }),
       });
 
-      // ==========================================
       // READ SERVER RESPONSE
-      // ==========================================
-
       const text = await response.text();
 
       console.log("LOGIN SERVER STATUS:", response.status);
@@ -69,31 +102,30 @@ export default function LoginScreen() {
         data = JSON.parse(text);
       } catch {
         throw new Error(
-          `Server returned an invalid response (${response.status}).`,
+          `The server returned an invalid response (${response.status}).`
         );
       }
 
-      // ==========================================
-      // SERVER LOGIN ERROR
-      // ==========================================
-
+      // VALIDATE LOGIN
       if (!response.ok || !data.success) {
-        throw new Error(data?.message || "Invalid email or password.");
+        throw new Error(
+          data?.message || "Invalid email or password."
+        );
       }
 
-      // ==========================================
       // CHECK USER DATA
-      // ==========================================
-
       if (!data.user || !data.user.id) {
-        throw new Error("Login succeeded, but user information is missing.");
+        throw new Error(
+          "Login succeeded, but user information is missing."
+        );
       }
 
+      // NORMALIZE USER ROLE
       const rawRole = String(data.user.role || "")
         .trim()
         .toLowerCase();
 
-      let userRole = "Resident";
+      let userRole: UserRole = "Resident";
 
       if (rawRole === "admin") {
         userRole = "Admin";
@@ -107,134 +139,115 @@ export default function LoginScreen() {
         userRole = "Resident";
       }
 
-      // ==========================================
       // CHECK ACCOUNT STATUS
-      // ==========================================
-
-      const userStatus = String(data.user.status || "Active")
+      const userStatus = String(
+        data.user.status || "Active"
+      )
         .trim()
         .toLowerCase();
 
       if (userStatus === "disabled") {
-        Alert.alert(
+        showError(
           "Account Disabled",
-          "Your account has been disabled. Please contact the administrator.",
+          "Your account has been disabled. Please contact the administrator."
         );
-
         return;
       }
 
-      // ==========================================
-      // SAVE LOGGED-IN USER
-      // ==========================================
-
+      // SAVE USER SESSION
       const loggedInUser = {
         id: Number(data.user.id),
-        fullName: data.user.fullName || data.user.full_name || "",
+        fullName:
+          data.user.fullName || data.user.full_name || "",
         email: data.user.email || email.trim(),
         role: userRole,
         status: data.user.status || "Active",
       };
 
-      await AsyncStorage.setItem("loggedInUser", JSON.stringify(loggedInUser));
+      await AsyncStorage.setItem(
+        "loggedInUser",
+        JSON.stringify(loggedInUser)
+      );
 
-      console.log("====================================");
       console.log("LOGGED-IN USER:", loggedInUser);
-      console.log("USER ROLE:", loggedInUser.role);
-      console.log("USER STATUS:", loggedInUser.status);
-      console.log("====================================");
 
-      // ==========================================
       // PUSH NOTIFICATION REGISTRATION
-      // ==========================================
-
-      console.log("REGISTERING FOR PUSH NOTIFICATIONS...");
-
+      // Notification errors should not prevent login.
       try {
-        const pushToken = await registerForPushNotificationsAsync();
+        console.log("REGISTERING FOR PUSH NOTIFICATIONS...");
+
+        const pushToken =
+          await registerForPushNotificationsAsync();
 
         if (pushToken) {
           console.log("PUSH TOKEN RECEIVED:", pushToken);
 
-          const notificationResult = await sendTestPushNotification(pushToken);
+          const notificationResult =
+            await sendTestPushNotification(pushToken);
 
-          console.log("TEST PUSH RESULT:", notificationResult);
+          console.log(
+            "TEST PUSH RESULT:",
+            notificationResult
+          );
         } else {
-          console.log("No push token received. Notification test skipped.");
+          console.log(
+            "No push token received. Test skipped."
+          );
         }
       } catch (notificationError) {
-        // Notification failure should NOT prevent login.
-        console.log("Push notification setup failed:", notificationError);
+        console.log(
+          "Push notification setup failed:",
+          notificationError
+        );
       }
 
-      // ==========================================
       // CLEAR LOGIN FORM
-      // ==========================================
-
       setEmail("");
       setPassword("");
 
-      // ==========================================
-      // ROLE-BASED NAVIGATION
-      // ==========================================
-
+      // ROLE-BASED CUSTOM SUCCESS MODAL
       if (loggedInUser.role === "Admin") {
-        // ========================================
-        // ADMIN
-        // ========================================
-
-        Alert.alert(
-          "Admin Login Successful",
+        showSuccess(
+          "Login Successful",
           `Welcome, ${loggedInUser.fullName}!`,
-          [
-            {
-              text: "Continue",
-              onPress: () => {
-                router.replace("/admin");
-              },
-            },
-          ],
+          "/admin"
         );
       } else if (loggedInUser.role === "Personnel") {
-        // ========================================
-        // PERSONNEL
-        // ========================================
-
-        Alert.alert(
-          "Personnel Login Successful",
-          `Welcome, ${loggedInUser.fullName}!`,
-          [
-            {
-              text: "Continue",
-              onPress: () => {
-                router.replace("/personnel-management");
-              },
-            },
-          ],
+        showSuccess(
+          "Login Successful",
+          `Welcome, ${loggedInUser.fullName}!\n\nYou are logged in as Collection Personnel.`,
+          "/personnel-management"
         );
       } else {
-        // ========================================
-        // RESIDENT
-        // ========================================
-
-        Alert.alert(
+        showSuccess(
           "Login Successful",
-          `Welcome back, ${loggedInUser.fullName}!`,
-          [
-            {
-              text: "Continue",
-              onPress: () => {
-                router.replace("/dashboard");
-              },
-            },
-          ],
+          `Welcome back, ${loggedInUser.fullName}!\n\nYou are logged in as Resident.`,
+          "/dashboard"
+        );
+      }
+    } catch (error: unknown) {
+      console.log("LOGIN ERROR:", error);
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : "An unexpected error occurred. Please try again.";
+
+      if (message.includes("Network request failed")) {
+        setErrorType("connection");
+        setErrorTitle("Connection Error");
+        setErrorMessage(
+          "We couldn't connect to the server. Check that your backend is running and your phone is connected to the same Wi-Fi network."
+        );
+        setErrorModalVisible(true);
+      } else {
+        showError(
+          "Login Unsuccessful",
+          message ||
+            "Please check your credentials and try again."
         );
       }
     } finally {
-      // ==========================================
-      // STOP LOADING
-      // ==========================================
-
       setLoading(false);
     }
   };
@@ -242,9 +255,10 @@ export default function LoginScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        {/* ==========================================
-            TITLE
-        ========================================== */}
+        {/* HEADER */}
+        <View style={styles.logoCircle}>
+          <Text style={styles.logoIcon}>♻</Text>
+        </View>
 
         <Text style={styles.title}>Welcome Back</Text>
 
@@ -252,11 +266,8 @@ export default function LoginScreen() {
           Sign in to your Garbage Collection account
         </Text>
 
-        {/* ==========================================
-            EMAIL
-        ========================================== */}
-
-        <Text style={styles.label}>Email</Text>
+        {/* EMAIL */}
+        <Text style={styles.label}>Email Address</Text>
 
         <TextInput
           style={styles.input}
@@ -268,12 +279,10 @@ export default function LoginScreen() {
           value={email}
           onChangeText={setEmail}
           editable={!loading}
+          returnKeyType="next"
         />
 
-        {/* ==========================================
-            PASSWORD
-        ========================================== */}
-
+        {/* PASSWORD */}
         <Text style={styles.label}>Password</Text>
 
         <TextInput
@@ -286,15 +295,16 @@ export default function LoginScreen() {
           value={password}
           onChangeText={setPassword}
           editable={!loading}
+          returnKeyType="go"
           onSubmitEditing={handleLogin}
         />
 
-        {/* ==========================================
-            LOGIN BUTTON
-        ========================================== */}
-
+        {/* LOGIN BUTTON */}
         <TouchableOpacity
-          style={[styles.loginButton, loading && styles.disabledButton]}
+          style={[
+            styles.loginButton,
+            loading && styles.disabledButton,
+          ]}
           onPress={handleLogin}
           disabled={loading}
           activeOpacity={0.8}
@@ -302,32 +312,125 @@ export default function LoginScreen() {
           {loading ? (
             <ActivityIndicator color="#FFFFFF" />
           ) : (
-            <Text style={styles.loginText}>Login</Text>
+            <Text style={styles.loginText}>Sign In</Text>
           )}
         </TouchableOpacity>
 
-        {/* ==========================================
-            REGISTER
-        ========================================== */}
-
+        {/* REGISTER */}
         <TouchableOpacity
+          style={styles.registerButton}
           onPress={() => router.replace("/register")}
           disabled={loading}
           activeOpacity={0.7}
         >
           <Text style={styles.registerText}>
-            Don't have an account? Register
+            Don't have an account?{" "}
+            <Text style={styles.registerHighlight}>
+              Register
+            </Text>
           </Text>
         </TouchableOpacity>
+
+        <Text style={styles.footerText}>
+          Garbage Collection Scheduling and Monitoring System
+        </Text>
       </View>
+
+      {/* CUSTOM SUCCESS MODAL */}
+      <Modal
+        visible={successModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setSuccessModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.successCard}>
+            <View style={styles.successIconCircle}>
+              <Text style={styles.successIcon}>✓</Text>
+            </View>
+
+            <Text style={styles.successTitle}>
+              {successTitle}
+            </Text>
+
+            <Text style={styles.successDescription}>
+              {successMessage}
+            </Text>
+
+            <TouchableOpacity
+              style={styles.successButton}
+              activeOpacity={0.8}
+              onPress={() => {
+                setSuccessModalVisible(false);
+                router.replace(successRoute);
+              }}
+            >
+              <Text style={styles.successButtonText}>
+                Continue
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* CUSTOM ERROR MODAL */}
+      <Modal
+        visible={errorModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setErrorModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.errorCard}>
+            <View
+              style={[
+                styles.errorIconCircle,
+                errorType === "connection"
+                  ? styles.connectionIcon
+                  : styles.loginErrorIcon,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.errorIcon,
+                  errorType === "connection"
+                    ? styles.connectionIconText
+                    : styles.loginErrorIconText,
+                ]}
+              >
+                {errorType === "connection" ? "!" : "×"}
+              </Text>
+            </View>
+
+            <Text style={styles.errorTitle}>
+              {errorTitle}
+            </Text>
+
+            <Text style={styles.errorDescription}>
+              {errorMessage}
+            </Text>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.errorButton,
+                pressed && styles.errorButtonPressed,
+              ]}
+              onPress={() => setErrorModalVisible(false)}
+            >
+              <Text style={styles.errorButtonText}>
+                Got it
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
-// ==================================================
 // STYLES
-// ==================================================
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -338,10 +441,31 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: "#FFFFFF",
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 24,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+    elevation: 3,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+  },
+
+  logoCircle: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: "#E6F5EF",
+    alignSelf: "center",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+
+  logoIcon: {
+    fontSize: 37,
+    color: "#087F5B",
   },
 
   title: {
@@ -352,29 +476,31 @@ const styles = StyleSheet.create({
   },
 
   subtitle: {
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 20,
     color: "#64748B",
     textAlign: "center",
     marginTop: 8,
-    marginBottom: 28,
+    marginBottom: 22,
   },
 
   label: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
     color: "#334155",
-    marginBottom: 7,
+    marginBottom: 8,
     marginTop: 12,
   },
 
   input: {
     height: 50,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: "#DCE4EC",
     borderRadius: 12,
     paddingHorizontal: 14,
     color: "#102A43",
     backgroundColor: "#FFFFFF",
+    fontSize: 14,
   },
 
   loginButton: {
@@ -383,11 +509,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
-    marginTop: 24,
+    marginTop: 25,
   },
 
   disabledButton: {
-    opacity: 0.7,
+    opacity: 0.65,
   },
 
   loginText: {
@@ -396,11 +522,181 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 
+  registerButton: {
+    paddingVertical: 16,
+  },
+
   registerText: {
     textAlign: "center",
-    marginTop: 18,
-    fontSize: 12,
+    fontSize: 13,
+    color: "#64748B",
+  },
+
+  registerHighlight: {
     color: "#087F5B",
+    fontWeight: "800",
+  },
+
+  footerText: {
+    fontSize: 10,
+    lineHeight: 15,
+    color: "#94A3B8",
+    textAlign: "center",
+    marginTop: 4,
+  },
+
+  // SHARED MODAL BACKGROUND
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 28,
+  },
+
+  // SUCCESS MODAL
+  successCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 26,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    elevation: 10,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 18,
+  },
+
+  successIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#E6F5EF",
+    borderWidth: 1,
+    borderColor: "#C5E8D9",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+
+  successIcon: {
+    fontSize: 36,
     fontWeight: "700",
+    color: "#087F5B",
+  },
+
+  successTitle: {
+    fontSize: 21,
+    fontWeight: "800",
+    color: "#102A43",
+    textAlign: "center",
+    marginBottom: 12,
+  },
+
+  successDescription: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: "#64748B",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+
+  successButton: {
+    width: "100%",
+    backgroundColor: "#087F5B",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+
+  successButtonText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+
+  // ERROR MODAL
+  errorCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 22,
+    padding: 26,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    elevation: 10,
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 18,
+  },
+
+  errorIconCircle: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 18,
+  },
+
+  connectionIcon: {
+    backgroundColor: "#FEF3C7",
+  },
+
+  loginErrorIcon: {
+    backgroundColor: "#FEE2E2",
+  },
+
+  errorIcon: {
+    fontSize: 36,
+    fontWeight: "700",
+  },
+
+  connectionIconText: {
+    color: "#B45309",
+  },
+
+  loginErrorIconText: {
+    color: "#B91C1C",
+  },
+
+  errorTitle: {
+    fontSize: 21,
+    fontWeight: "800",
+    color: "#102A43",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+
+  errorDescription: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#64748B",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+
+  errorButton: {
+    width: "100%",
+    backgroundColor: "#087F5B",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+
+  errorButtonPressed: {
+    opacity: 0.8,
+  },
+
+  errorButtonText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 });
