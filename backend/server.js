@@ -1613,7 +1613,7 @@ async function ensureAdmin() {
       console.log("Default admin reset");
     }
   } catch (error) {
-    console.error("ensureAdmin error:", error.message);
+    console.error("ensureAdmin error:", error.code, error.message, error.errors);
   }
 }
 // ===== RESIDENT COLLECTION HISTORY (READ-ONLY) =====
