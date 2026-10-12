@@ -9,4 +9,6 @@ password: process.env.MYSQLPASSWORD || "buoCpmyBbGAcVWaWwsJPqDPOAzIazOsd",
 database: process.env.MYSQLDATABASE || "railway",
 });
 
+console.log("DB host:", process.env.MYSQLHOST || "NOT SET (using localhost)");
+
 module.exports = db;
