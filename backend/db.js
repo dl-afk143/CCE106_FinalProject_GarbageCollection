@@ -3,12 +3,10 @@ require("dotenv").config();
 
 const db = mysql.createPool({
   host: process.env.MYSQLHOST || "localhost",
-  port: process.env.MYSQLPORT || 3306,
-  user: process.env.MYSQLUSER || "root",
-  password: process.env.MYSQLPASSWORD || "",
-  database: process.env.MYSQLDATABASE || "railway",
+port: process.env.MYSQLPORT || 3306,
+user: process.env.MYSQLUSER || "root",
+password: process.env.MYSQLPASSWORD || "buoCpmyBbGAcVWaWwsJPqDPOAzIazOsd",
+database: process.env.MYSQLDATABASE || "railway",
 });
-
-console.log("DB host:", process.env.MYSQLHOST || "NOT SET (using localhost)");
 
 module.exports = db;
